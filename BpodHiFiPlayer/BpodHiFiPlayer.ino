@@ -42,6 +42,11 @@
 #define USB_TRANSFER_BUFFER_SIZE 10000
 #define MAX_MEMORY_BYTES FILE_TRANSFER_BUFFER_SIZE*MAX_WAVEFORMS
 
+// --- TI TPA6130A2 Audio Amp macros ---
+#define TPA6130A2_ADDRESS 0x60
+#define TPA6130A2_REG1 0x1
+#define TPA6130A2_REG2 0x2
+
 // DAC setup
 PCM51xx pcm(Wire);
 
@@ -53,6 +58,10 @@ bool ready = false;
 
 // USB Transfer
 byte usbTransferBuffer[USB_TRANSFER_BUFFER_SIZE] = {0};
+
+// Headphone amp setup
+boolean useHeadphoneAmp = false;
+byte headphoneAmpGain = 52; // Range = 0-63. 52 = –0.3dB attenuation (closest position to 0). See table 2 on p.17 of TPA6130A2 datasheet for exact attenuation at each position
 
 // Loop Mode
 byte loopMode[MAX_WAVEFORMS] = {0}; // (for each sound) Loops waveform until loopDuration seconds
@@ -141,6 +150,8 @@ void setup() {
   CodecDAC_begin();
   uint32_t sfCode = sf2ByteCode(MAX_SAMPLING_RATE);
   Wire.begin();
+  setAmpPower(false); // Disable headphone amp
+  setAmpGain(headphoneAmpGain); 
   pcm.begin(sfCode,PCM51xx::BITS_PER_SAMPLE_16); // For some reason it has to be initialized at 192k for use at 96k...
   pcm.setVolume(64);
   Serial1.begin(1312500);
@@ -206,6 +217,16 @@ void loop() {
           USBCOM.readUint32Array(loopDuration,MAX_WAVEFORMS);
           USBCOM.writeByte(1); // Acknowledge
         }
+      break;
+      case 'H': // Enable headphone amp
+        useHeadphoneAmp = USBCOM.readByte();
+        setAmpPower(useHeadphoneAmp);
+        USBCOM.writeByte(1); // Acknowledge
+      break;
+      case 'G': // Set headphone amp gain
+        headphoneAmpGain = USBCOM.readByte();
+        setAmpGain(headphoneAmpGain);
+        USBCOM.writeByte(1); // Acknowledge
       break;
       case 'L':
         if (opSource == 0) {
@@ -551,6 +572,28 @@ uint32_t sf2ByteCode(uint32_t sf) {
     break;
   }
   return SFreg;
+}
+
+void setAmpPower(boolean powerState) {
+  if (powerState == 0) {
+    TPA6130A2_write(TPA6130A2_REG1, 0); // 00000000 - both channels disabled
+  } else {
+    TPA6130A2_write(TPA6130A2_REG1, 192); // 11000000 - both channels enabled
+  }
+}
+
+void setAmpGain(byte taperLevel) {
+  if (taperLevel > 63) {
+    taperLevel = 63;
+  }
+  TPA6130A2_write(TPA6130A2_REG2, taperLevel);
+}
+
+void TPA6130A2_write(byte address, byte val) {
+  Wire.beginTransmission(TPA6130A2_ADDRESS);  // start transmission to device   
+  Wire.write(address);                 // send register address
+  Wire.write(val);                     // send value to write
+  Wire.endTransmission();               // end transmission
 }
 
 void returnModuleInfo() {
