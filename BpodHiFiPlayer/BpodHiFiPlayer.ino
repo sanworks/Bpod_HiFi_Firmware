@@ -19,14 +19,12 @@
 
 */
 
-// Note: Requires PCM51xx library: https://github.com/tommag/PCM51xx_Arduino
 // Note: Requires Arduino 1.8.13 or newer, and Teensyduino 1.5.4 (tested on 1.5.4 beta 5)
 
 #include <Audio.h>
 #include <utility/imxrt_hw.h>
 #include <Wire.h>
 #include <SPI.h>
-#include "PCM51xx.h"
 #include "ArCOM.h"
 #include "SdFat.h"
 
@@ -42,13 +40,14 @@
 #define USB_TRANSFER_BUFFER_SIZE 10000
 #define MAX_MEMORY_BYTES FILE_TRANSFER_BUFFER_SIZE*MAX_WAVEFORMS
 
+// --- TI PCM5122 DAC macros ---
+
+#define PCM5122_ADDRESS 0x4D
+
 // --- TI TPA6130A2 Audio Amp macros ---
 #define TPA6130A2_ADDRESS 0x60
 #define TPA6130A2_REG1 0x1
 #define TPA6130A2_REG2 0x2
-
-// DAC setup
-PCM51xx pcm(Wire);
 
 // microSD setup
 SdFs SDcard;
@@ -148,12 +147,11 @@ uint32_t bufferPlaybackPos = 0;
 
 void setup() {
   CodecDAC_begin();
-  uint32_t sfCode = sf2ByteCode(MAX_SAMPLING_RATE);
   Wire.begin();
   setAmpPower(false); // Disable headphone amp
   setAmpGain(headphoneAmpGain); 
-  pcm.begin(sfCode,PCM51xx::BITS_PER_SAMPLE_16); // For some reason it has to be initialized at 192k for use at 96k...
-  pcm.setVolume(64);
+  setupDAC();
+  
   Serial1.begin(1312500);
   SDcard.begin(SdioConfig(FIFO_SDIO));
   Wave0 = SDcard.open("Wave0.wfm", O_RDWR | O_CREAT);
@@ -164,10 +162,7 @@ void setup() {
   for (int i = 0; i < MAX_MEMORY_BYTES / 4; i++) {
     AudioData.int32[i] = 0;
   }
-  for (int i = 0; i < MAX_WAVEFORMS; i++) {
-    waveformStartSamplePosSD[i] = i * samplingRate * MAX_SECONDS_PER_WAVEFORM;
-    waveformStartSamplePosRAM[i] = i*FILE_TRANSFER_BUFFER_SIZE_SAMPLES;
-  }
+  setStartSamplePositions();
 }
 
 void loop() {
@@ -226,6 +221,12 @@ void loop() {
       case 'G': // Set headphone amp gain
         headphoneAmpGain = USBCOM.readByte();
         setAmpGain(headphoneAmpGain);
+        USBCOM.writeByte(1); // Acknowledge
+      break;
+      case 'S': // Set sampling rate
+        samplingRate = USBCOM.readUint32();
+        CodecDAC_config_i2s();
+        setStartSamplePositions();
         USBCOM.writeByte(1); // Acknowledge
       break;
       case 'L':
@@ -366,8 +367,8 @@ void CodecDAC_config_i2s(void)
   CCM_CCGR5 |= CCM_CCGR5_SAI1(CCM_CCGR_ON); //enables SAI1 clock in CCM_CCGR5 register
 
   //PLL:
-  int fs = MAX_SAMPLING_RATE; //AUDIO_SAMPLE_RATE_EXACT;
-  // PLL between 27*24 = 648MHz und 54*24=1296MHz
+  int fs = samplingRate;
+  // PLL between 27*24 = 648MHz and 54*24=1296MHz
   int n1 = 4; //SAI prescaler 4 => (n1*n2) = multiple of 4
   int n2 = 1 + (24000000 * 27) / (fs * 256 * n1);
 
@@ -555,25 +556,6 @@ bool sdBusy() {
   return ready ? SDcard.card()->isBusy() : false;
 }
 
-uint32_t sf2ByteCode(uint32_t sf) {
-  uint32_t SFreg = 0;
-   switch (sf) {
-    case 44100:
-      SFreg = PCM51xx::SAMPLE_RATE_96K;
-    break;
-    case 48000:
-      SFreg = PCM51xx::SAMPLE_RATE_96K;
-    break;
-    case 96000:
-      SFreg = PCM51xx::SAMPLE_RATE_192K;
-    break;
-    case 192000:
-      SFreg = PCM51xx::SAMPLE_RATE_384K;
-    break;
-  }
-  return SFreg;
-}
-
 void setAmpPower(boolean powerState) {
   if (powerState == 0) {
     TPA6130A2_write(TPA6130A2_REG1, 0); // 00000000 - both channels disabled
@@ -589,8 +571,35 @@ void setAmpGain(byte taperLevel) {
   TPA6130A2_write(TPA6130A2_REG2, taperLevel);
 }
 
+void setupDAC() {
+  PCM5122_write(2, 0x10); // Power --> Standby
+  PCM5122_write(1, 0x11); // Reset DAC
+  PCM5122_write(2, 0x00); // Power --> On
+  PCM5122_write(13, 0x10); // Set PLL reference clock = BCK
+  PCM5122_write(14, 0x10); // Set DAC clock source = PLL
+  PCM5122_write(37, 0x7D); // Ignore various errors
+  PCM5122_write(61, 48); // Set left ch volume attenuation = 0dB
+  PCM5122_write(62, 48); // Set right ch volume attenuation = 0dB
+  PCM5122_write(65, 0x00); // Set mute off
+  PCM5122_write(2, 0x00); // Power --> On
+}
+
+void setStartSamplePositions() {
+  for (int i = 0; i < MAX_WAVEFORMS; i++) {
+    waveformStartSamplePosSD[i] = i * samplingRate * MAX_SECONDS_PER_WAVEFORM;
+    waveformStartSamplePosRAM[i] = i*FILE_TRANSFER_BUFFER_SIZE_SAMPLES;
+  }
+}
+
 void TPA6130A2_write(byte address, byte val) {
   Wire.beginTransmission(TPA6130A2_ADDRESS);  // start transmission to device   
+  Wire.write(address);                 // send register address
+  Wire.write(val);                     // send value to write
+  Wire.endTransmission();               // end transmission
+}
+
+void PCM5122_write(byte address, byte val) {
+  Wire.beginTransmission(PCM5122_ADDRESS);  // start transmission to device   
   Wire.write(address);                 // send register address
   Wire.write(val);                     // send value to write
   Wire.endTransmission();               // end transmission
