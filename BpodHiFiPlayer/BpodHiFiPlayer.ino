@@ -186,6 +186,14 @@ void loop() {
           USBCOM.writeByte(244);
         }
       break;
+      case 'I': // Return info to PC
+        if (opSource == 0) {
+          USBCOM.writeUint32(samplingRate);
+          USBCOM.writeUint32(MAX_WAVEFORMS);
+          USBCOM.writeUint32(MAX_SECONDS_PER_WAVEFORM);
+          USBCOM.writeUint32(MAX_ENVELOPE_SIZE);
+        }
+      break;
       case 'E': // Use/disuse AM envelope
         useAMEnvelope = USBCOM.readByte();
         USBCOM.writeByte(1); // Acknowledge
@@ -432,7 +440,7 @@ void CodecDAC_begin(void)
   CodecDAC_dma.TCD->CITER_ELINKNO = sizeof(myi2s_tx_buffer.int16) / 2;
   CodecDAC_dma.TCD->DLASTSGA = 0; // destination address offset
   CodecDAC_dma.TCD->BITER_ELINKNO = sizeof(myi2s_tx_buffer.int16) / 2;
-  CodecDAC_dma.TCD->CSR = DMA_TCD_CSR_INTHALF; //| DMA_TCD_CSR_INTMAJOR; // enables interrupt when transfers half and full complete SET TO 0 to disable DMA interrupts
+  CodecDAC_dma.TCD->CSR = DMA_TCD_CSR_INTMAJOR; //| DMA_TCD_CSR_INTHALF; // enables interrupt when transfers half and full complete SET TO 0 to disable DMA interrupts
   CodecDAC_dma.TCD->DADDR = (void *)((uint32_t)&I2S1_TDR0 + 2); // I2S1 register DMA writes to
   CodecDAC_dma.triggerAtHardwareEvent(DMAMUX_SOURCE_SAI1_TX); // i2s channel that will trigger the DMA transfer when ready for data
   CodecDAC_dma.enable();
