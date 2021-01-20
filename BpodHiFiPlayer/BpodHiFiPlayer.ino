@@ -30,15 +30,20 @@
 
 #define FirmwareVersion 1
 
-#define MAX_WAVEFORMS 20
-#define NBYTES_PER_SAMPLE 4 // 16 bit stereo
-#define MAX_SECONDS_PER_WAVEFORM 10
-#define MAX_SAMPLING_RATE 192000
+#define BIT_DEPTH 16 // Bits per sample
+#define MAX_SAMPLING_RATE 192000 // Hz
+#define MAX_WAVEFORMS 20 // Number of separate audio waveforms the device can store
+#define MAX_SECONDS_PER_WAVEFORM 10 // Maximum number of seconds per waveform
 #define MAX_ENVELOPE_SIZE 2000 // Maximum size of AM onset/offset envelope (in samples)
+#define SYNC_PIN 30 // GPIO pin controlling SYNC BNC output
+#define SYNC_PIN_DELAY_ONSET 22 // Number of DMA ISR calls before sync line goes high after sound onset
+#define SYNC_PIN_DELAY_OFFSET 27 // Number of DMA ISR calls before sync line goes low after sound end
 #define FILE_TRANSFER_BUFFER_SIZE 64000
-#define FILE_TRANSFER_BUFFER_SIZE_SAMPLES FILE_TRANSFER_BUFFER_SIZE/4
 #define USB_TRANSFER_BUFFER_SIZE 10000
+
+#define FILE_TRANSFER_BUFFER_SIZE_SAMPLES FILE_TRANSFER_BUFFER_SIZE/4
 #define MAX_MEMORY_BYTES FILE_TRANSFER_BUFFER_SIZE*MAX_WAVEFORMS
+#define NBYTES_PER_SAMPLE BIT_DEPTH/4 // 4 = 16 bit stereo, 8 = 24 bit stereo (encoded with 32 bit ints)
 
 // --- TI PCM5122 DAC macros ---
 
@@ -112,6 +117,10 @@ uint32_t playbackFilePos = 0; // Position of current sample in the data file bei
 byte currentPlayBuffer = 0; // Current buffer for each channel (a double buffering scheme allows one to be filled while the other is read)
 byte PowerState = 0;
 boolean schedulePlaybackStop = false;
+boolean syncPinStartFlag = false; // True if a trigger has been received to start audio playback
+boolean syncPinEndFlag = false;
+uint32_t syncPinStartTimer = 0;
+uint32_t syncPinEndTimer = 0;
 
 // AM onset/offset envelope
 boolean useAMEnvelope = false; // True if using AM envelope on sound start/stop
@@ -146,6 +155,8 @@ union {
 uint32_t bufferPlaybackPos = 0;
 
 void setup() {
+  pinMode(SYNC_PIN, OUTPUT);
+  digitalWrite(SYNC_PIN, LOW);
   CodecDAC_begin();
   Wire.begin();
   setAmpPower(false); // Disable headphone amp
@@ -189,6 +200,7 @@ void loop() {
       case 'I': // Return info to PC
         if (opSource == 0) {
           USBCOM.writeUint32(samplingRate);
+          USBCOM.writeUint32(BIT_DEPTH);
           USBCOM.writeUint32(MAX_WAVEFORMS);
           USBCOM.writeUint32(MAX_SECONDS_PER_WAVEFORM);
           USBCOM.writeUint32(MAX_ENVELOPE_SIZE);
@@ -299,6 +311,8 @@ void loop() {
           envelopeDir = 0;
           envelopePos = 0;
         }
+        syncPinStartFlag = true;
+        syncPinStartTimer = 0;
         isPlaying = true;
       break;
       case 'X':
@@ -344,7 +358,7 @@ void loop() {
       Wave0.read(BufferB.byteArray, FILE_TRANSFER_BUFFER_SIZE);
     }
     playbackFilePos += FILE_TRANSFER_BUFFER_SIZE;
-  }
+  }  
 }
 
 
@@ -550,6 +564,23 @@ void CodecDAC_isr(void)
     } else {
       myi2s_tx_buffer.int32[0] = 0;
     }
+  } else {
+    if (syncPinStartFlag) {
+      if (syncPinStartTimer > SYNC_PIN_DELAY_ONSET) {
+        digitalWriteFast(SYNC_PIN, HIGH);
+        syncPinStartFlag = false;
+      } else {
+        syncPinStartTimer++;
+      }
+    }
+    if (syncPinEndFlag) {
+      if (syncPinEndTimer > SYNC_PIN_DELAY_OFFSET) {
+        digitalWriteFast(SYNC_PIN, LOW);
+        syncPinEndFlag = false;
+      } else {
+        syncPinEndTimer++;
+      }
+    }
   }
   arm_dcache_flush_delete(myi2s_tx_buffer.int32, sizeof(myi2s_tx_buffer.int32));
   CodecDAC_dma.clearInterrupt();
@@ -557,6 +588,8 @@ void CodecDAC_isr(void)
   if (schedulePlaybackStop) {
     isPlaying = false;
     schedulePlaybackStop = false;
+    syncPinEndFlag = true;
+    syncPinEndTimer = 0;
   }
 }
 
