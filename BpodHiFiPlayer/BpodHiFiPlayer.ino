@@ -29,11 +29,12 @@
 #include "SdFat.h"
 
 #define FirmwareVersion 1
+#define TEENSY_I2S_MASTER 1 // Set to 1 for Teensy as I2S master. Set to 0 for HiFiBerry as I2S master using its precision clock source
 
 #define BIT_DEPTH 16 // Bits per sample
 #define MAX_SAMPLING_RATE 192000 // Hz
 #define MAX_WAVEFORMS 20 // Number of separate audio waveforms the device can store
-#define MAX_SECONDS_PER_WAVEFORM 10 // Maximum number of seconds per waveform
+#define MAX_SECONDS_PER_WAVEFORM 20 // Maximum number of seconds per waveform
 #define MAX_ENVELOPE_SIZE 2000 // Maximum size of AM onset/offset envelope (in samples)
 #define SYNC_PIN 30 // GPIO pin controlling SYNC BNC output
 #define SYNC_PIN_DELAY_ONSET 22 // Number of DMA ISR calls before sync line goes high after sound onset
@@ -89,6 +90,8 @@ unsigned long partialReadSize = 0;
 
 ArCOM USBCOM(Serial);
 ArCOM StateMachineCOM(Serial1);
+
+boolean LED_Enabled = true;
 
 byte state = 0;
 byte stateCount = 0;
@@ -160,8 +163,12 @@ void setup() {
   CodecDAC_begin();
   Wire.begin();
   setAmpPower(false); // Disable headphone amp
-  setAmpGain(headphoneAmpGain); 
-  setupDAC();
+  setAmpGain(headphoneAmpGain);
+  #if TEENSY_I2S_MASTER 
+    setup_PCM5122_I2SSlave();
+  #else
+    setup_PCM5122_I2SMaster();
+  #endif
   
   Serial1.begin(1312500);
   SDcard.begin(SdioConfig(FIFO_SDIO));
@@ -245,7 +252,11 @@ void loop() {
       break;
       case 'S': // Set sampling rate
         samplingRate = USBCOM.readUint32();
-        CodecDAC_config_i2s();
+        #if TEENSY_I2S_MASTER 
+          CodecDAC_config_i2s_master();
+        #else
+          CodecDAC_config_i2s_slave();
+        #endif
         setStartSamplePositions();
         USBCOM.writeByte(1); // Acknowledge
       break;
@@ -384,7 +395,7 @@ FLASHMEM static void configure_audioClock(int nfact, int32_t nmult, uint32_t ndi
   CCM_ANALOG_PLL_AUDIO &= ~CCM_ANALOG_PLL_AUDIO_BYPASS;//Disable Bypass
 }
 
-void CodecDAC_config_i2s(void)
+void CodecDAC_config_i2s_master(void)
 {
   CCM_CCGR5 |= CCM_CCGR5_SAI1(CCM_CCGR_ON); //enables SAI1 clock in CCM_CCGR5 register
 
@@ -440,10 +451,48 @@ void CodecDAC_config_i2s(void)
   I2S1_RCR5 = I2S_RCR5_WNW((32 - 1)) | I2S_RCR5_W0W((32 - 1)) | I2S_RCR5_FBT((32 - 1));
 }
 
+void CodecDAC_config_i2s_slave(void)
+{
+  CCM_CCGR5 |= CCM_CCGR5_SAI1(CCM_CCGR_ON);
+
+  // if either transmitter or receiver is enabled, do nothing
+  if (I2S1_TCSR & I2S_TCSR_TE) return;
+  if (I2S1_RCSR & I2S_RCSR_RE) return;
+
+  // not using MCLK in slave mode - hope that's ok?
+  //CORE_PIN23_CONFIG = 3;  // AD_B1_09  ALT3=SAI1_MCLK
+  CORE_PIN21_CONFIG = 3;  // AD_B1_11  ALT3=SAI1_RX_BCLK
+  CORE_PIN20_CONFIG = 3;  // AD_B1_10  ALT3=SAI1_RX_SYNC
+  IOMUXC_SAI1_RX_BCLK_SELECT_INPUT = 1; // 1=GPIO_AD_B1_11_ALT3, page 868
+  IOMUXC_SAI1_RX_SYNC_SELECT_INPUT = 1; // 1=GPIO_AD_B1_10_ALT3, page 872
+
+  // configure transmitter
+  I2S1_TMR = 0;
+  I2S1_TCR1 = I2S_TCR1_RFW(1);  // watermark at half fifo size
+  I2S1_TCR2 = I2S_TCR2_SYNC(1) | I2S_TCR2_BCP;
+  I2S1_TCR3 = I2S_TCR3_TCE;
+  I2S1_TCR4 = I2S_TCR4_FRSZ(1) | I2S_TCR4_SYWD(31) | I2S_TCR4_MF
+    | I2S_TCR4_FSE | I2S_TCR4_FSP | I2S_RCR4_FSD;
+  I2S1_TCR5 = I2S_TCR5_WNW(31) | I2S_TCR5_W0W(31) | I2S_TCR5_FBT(31);
+
+  // configure receiver
+  I2S1_RMR = 0;
+  I2S1_RCR1 = I2S_RCR1_RFW(1);
+  I2S1_RCR2 = I2S_RCR2_SYNC(0) | I2S_TCR2_BCP;
+  I2S1_RCR3 = I2S_RCR3_RCE;
+  I2S1_RCR4 = I2S_RCR4_FRSZ(1) | I2S_RCR4_SYWD(31) | I2S_RCR4_MF
+    | I2S_RCR4_FSE | I2S_RCR4_FSP;
+  I2S1_RCR5 = I2S_RCR5_WNW(31) | I2S_RCR5_W0W(31) | I2S_RCR5_FBT(31);
+}
+
 void CodecDAC_begin(void)
 {
   CodecDAC_dma.begin(true); // Allocate the DMA channel first
-  CodecDAC_config_i2s();
+  #if TEENSY_I2S_MASTER 
+    CodecDAC_config_i2s_master();
+  #else
+    CodecDAC_config_i2s_slave();
+  #endif
   CORE_PIN7_CONFIG  = 3;  //1:TX_DATA0 pin 7 on uP
   CodecDAC_dma.TCD->SADDR = myi2s_tx_buffer.int16; //source address
   CodecDAC_dma.TCD->SOFF = 2; // source buffer address increment per transfer in bytes
@@ -599,9 +648,9 @@ bool sdBusy() {
 
 void setAmpPower(boolean powerState) {
   if (powerState == 0) {
-    TPA6130A2_write(TPA6130A2_REG1, 0); // 00000000 - both channels disabled
+    i2c_write(TPA6130A2_ADDRESS, TPA6130A2_REG1, 0); // 00000000 - both channels disabled
   } else {
-    TPA6130A2_write(TPA6130A2_REG1, 192); // 11000000 - both channels enabled
+    i2c_write(TPA6130A2_ADDRESS, TPA6130A2_REG1, 192); // 11000000 - both channels enabled
   }
 }
 
@@ -609,20 +658,99 @@ void setAmpGain(byte taperLevel) {
   if (taperLevel > 63) {
     taperLevel = 63;
   }
-  TPA6130A2_write(TPA6130A2_REG2, taperLevel);
+  i2c_write(TPA6130A2_ADDRESS, TPA6130A2_REG2, taperLevel);
 }
 
-void setupDAC() {
-  PCM5122_write(2, 0x10); // Power --> Standby
-  PCM5122_write(1, 0x11); // Reset DAC
-  PCM5122_write(2, 0x00); // Power --> On
-  PCM5122_write(13, 0x10); // Set PLL reference clock = BCK
-  PCM5122_write(14, 0x10); // Set DAC clock source = PLL
-  PCM5122_write(37, 0x7D); // Ignore various errors
-  PCM5122_write(61, 48); // Set left ch volume attenuation = 0dB
-  PCM5122_write(62, 48); // Set right ch volume attenuation = 0dB
-  PCM5122_write(65, 0x00); // Set mute off
-  PCM5122_write(2, 0x00); // Power --> On
+void setup_PCM5122_I2SSlave() {
+  i2c_write(PCM5122_ADDRESS, 2,  B00010000); // Power --> Standby
+  i2c_write(PCM5122_ADDRESS, 1,  B00010001); // Reset DAC
+  i2c_write(PCM5122_ADDRESS, 2,  B00000000); // Power --> On
+  if (LED_Enabled) {
+    i2c_write(PCM5122_ADDRESS, 8, 0x8); // Register 8 = GPIO enable = 8 = enable ch4 (LED Line)
+    i2c_write(PCM5122_ADDRESS, 83, 0x02); // Reg 82 = GPIO ch4 config = 02 = output controlled by reg 86
+    i2c_write(PCM5122_ADDRESS, 86, B00001000); // Reg 86 = GPIO write = 8 (line 4 high --> LED on)
+  }
+  i2c_write(PCM5122_ADDRESS, 13, B00010000); // Set PLL reference clock = BCK
+  i2c_write(PCM5122_ADDRESS, 14, B00010000); // Set DAC clock source = PLL
+  i2c_write(PCM5122_ADDRESS, 37, B01111101); // Ignore various errors
+  i2c_write(PCM5122_ADDRESS, 61, B00110000); // Set left ch volume attenuation, 48 = 0dB
+  i2c_write(PCM5122_ADDRESS, 62, B00110000); // Set right ch volume attenuation, 48 = 0dB
+  i2c_write(PCM5122_ADDRESS, 65, B00000000); // Set mute off
+  i2c_write(PCM5122_ADDRESS, 2,  B00000000); // Power --> On
+}
+
+void setup_PCM5122_I2SMaster() {
+    // Reset and powerup
+  i2c_write(PCM5122_ADDRESS, 2,  B00010000); // Power --> Standby
+  i2c_write(PCM5122_ADDRESS, 1,  B00010001); // Reset DAC
+  i2c_write(PCM5122_ADDRESS, 2,  B00000000); // Power --> On
+  i2c_write(PCM5122_ADDRESS, 2,  B00010000); // Power --> Standby
+
+  // DAC GPIO setup
+  i2c_write(PCM5122_ADDRESS, 8,  B00101100); // Register 8 = GPIO enable = 24 = enable ch3 + 6
+  i2c_write(PCM5122_ADDRESS, 82, B00000010); // Reg 82 = GPIO ch3 config = 02 = output controlled by reg 86
+  i2c_write(PCM5122_ADDRESS, 83, B00000010); // Reg 82 = GPIO ch4 config = 02 = output controlled by reg 86
+  i2c_write(PCM5122_ADDRESS, 85, B00000010); // Reg 85 = GPIO ch6 config = 02 = output controlled by reg 86
+  i2c_write(PCM5122_ADDRESS, 86, B00000000); // Reg 86 = GPIO write = 00 (all lines low)
+
+  // Master mode setup
+  i2c_write(PCM5122_ADDRESS, 9,  B00010001); //BCK, LRCLK configuration = 10001 = set BCK and LRCK to outputs (master mode)
+  i2c_write(PCM5122_ADDRESS, 12, B00000011); //Master mode BCK, LRCLK reset = 11 = BCK and LRCK clock dividers enabled
+  i2c_write(PCM5122_ADDRESS, 40, B00000000); //I2S data format, word length = 0 = 16 bit I2S //**DOES NOT MATTER**
+  i2c_write(PCM5122_ADDRESS, 37, B01111101); // Ignore various errors
+  i2c_write(PCM5122_ADDRESS, 4,  B00000000); // Disable PLL = 0 = off
+  i2c_write(PCM5122_ADDRESS, 14, B00110000); //DAC clock source selection = 011 = SCK clock
+//  WHA?? THESE DON'T MATTER?
+//  i2c_write(PCM5122_ADDRESS, 28, B00000011); //DAC clock divider (B00001 = divide by 2, etc. 3 = divide by 4, same for next 4 dividers)
+//  i2c_write(PCM5122_ADDRESS, 29, B00000011); //CP clock divider
+//  i2c_write(PCM5122_ADDRESS, 30, B00000001); //OSR clock divider
+  switch (samplingRate) {
+    case 44100:
+        i2c_write(PCM5122_ADDRESS, 32, B00000111); //Master mode BCK divider
+        i2c_write(PCM5122_ADDRESS, 33, B00111111); //Master mode LRCK divider
+        if (LED_Enabled) {
+          i2c_write(PCM5122_ADDRESS, 86, B00101000); // Reg 86 = GPIO write = 36 (line 3 high) // Enable precision clock
+        } else {
+          i2c_write(PCM5122_ADDRESS, 86, B00100000); // Reg 86 = GPIO write = 36 (line 3 high) // Enable precision clock
+        }
+    break;
+    case 48000:
+        i2c_write(PCM5122_ADDRESS, 32, B00000111); //Master mode BCK divider
+        i2c_write(PCM5122_ADDRESS, 33, B00111111); //Master mode LRCK divider
+        if (LED_Enabled) {
+          i2c_write(PCM5122_ADDRESS, 86, B00001100); // Reg 86 = GPIO write = 36 (line 3 high) // Enable precision clock
+        } else {
+          i2c_write(PCM5122_ADDRESS, 86, B00000100); // Reg 86 = GPIO write = 36 (line 3 high) // Enable precision clock
+        }
+    break;
+    case 96000:
+        i2c_write(PCM5122_ADDRESS, 32, B00000011); //Master mode BCK divider
+        i2c_write(PCM5122_ADDRESS, 33, B00111111); //Master mode LRCK divider
+        if (LED_Enabled) {
+          i2c_write(PCM5122_ADDRESS, 86, B00001100); // Reg 86 = GPIO write = 36 (line 3 high) // Enable precision clock
+        } else {
+          i2c_write(PCM5122_ADDRESS, 86, B00000100); // Reg 86 = GPIO write = 36 (line 3 high) // Enable precision clock
+        }
+    break;
+    case 192000:
+        i2c_write(PCM5122_ADDRESS, 32, B00000001); //Master mode BCK divider
+        i2c_write(PCM5122_ADDRESS, 33, B00111111); //Master mode LRCK divider
+        if (LED_Enabled) {
+          i2c_write(PCM5122_ADDRESS, 86, B00001100); // Reg 86 = GPIO write = 36 (line 3 high) // Enable precision clock
+        } else {
+          i2c_write(PCM5122_ADDRESS, 86, B00000100); // Reg 86 = GPIO write = 36 (line 3 high) // Enable precision clock
+        }
+    break;
+  }
+  
+  i2c_write(PCM5122_ADDRESS, 19, B00000001); // Clock sync request
+  i2c_write(PCM5122_ADDRESS, 19, B00000000); // Clock sync start
+
+  // Finish startup
+  i2c_write(PCM5122_ADDRESS, 61, B00110000); // Set left ch volume attenuation, 48 = 0dB
+  i2c_write(PCM5122_ADDRESS, 62, B00110000); // Set right ch volume attenuation, 48 = 0dB
+  i2c_write(PCM5122_ADDRESS, 65, B00000000); // Set mute off
+  i2c_write(PCM5122_ADDRESS, 2,  B00000000); // Power --> On
 }
 
 void setStartSamplePositions() {
@@ -632,18 +760,11 @@ void setStartSamplePositions() {
   }
 }
 
-void TPA6130A2_write(byte address, byte val) {
-  Wire.beginTransmission(TPA6130A2_ADDRESS);  // start transmission to device   
-  Wire.write(address);                 // send register address
-  Wire.write(val);                     // send value to write
-  Wire.endTransmission();               // end transmission
-}
-
-void PCM5122_write(byte address, byte val) {
-  Wire.beginTransmission(PCM5122_ADDRESS);  // start transmission to device   
-  Wire.write(address);                 // send register address
-  Wire.write(val);                     // send value to write
-  Wire.endTransmission();               // end transmission
+void i2c_write(byte i2cAddress, byte address, byte val) {
+  Wire.beginTransmission(i2cAddress);  
+  Wire.write(address);
+  Wire.write(val);
+  Wire.endTransmission();
 }
 
 void returnModuleInfo() {
