@@ -29,7 +29,7 @@
 #include "SdFat.h"
 
 #define FirmwareVersion 1
-#define TEENSY_I2S_MASTER 1 // Set to 1 for Teensy as I2S master. Set to 0 for HiFiBerry as I2S master using its precision clock source
+#define TEENSY_I2S_MASTER 0 // Set to 1 for Teensy as I2S master. Set to 0 for HiFiBerry as I2S master using its precision clock source
 
 #define BIT_DEPTH 16 // Bits per sample
 #define MAX_SAMPLING_RATE 192000 // Hz
@@ -206,9 +206,10 @@ void loop() {
       break;
       case 'I': // Return info to PC
         if (opSource == 0) {
+          USBCOM.writeByte(TEENSY_I2S_MASTER);
+          USBCOM.writeByte(BIT_DEPTH);
+          USBCOM.writeByte(MAX_WAVEFORMS);
           USBCOM.writeUint32(samplingRate);
-          USBCOM.writeUint32(BIT_DEPTH);
-          USBCOM.writeUint32(MAX_WAVEFORMS);
           USBCOM.writeUint32(MAX_SECONDS_PER_WAVEFORM);
           USBCOM.writeUint32(MAX_ENVELOPE_SIZE);
         }
@@ -255,7 +256,7 @@ void loop() {
         #if TEENSY_I2S_MASTER 
           CodecDAC_config_i2s_master();
         #else
-          CodecDAC_config_i2s_slave();
+          setup_PCM5122_I2SMaster();
         #endif
         setStartSamplePositions();
         USBCOM.writeByte(1); // Acknowledge
@@ -700,6 +701,7 @@ void setup_PCM5122_I2SMaster() {
   i2c_write(PCM5122_ADDRESS, 37, B01111101); // Ignore various errors
   i2c_write(PCM5122_ADDRESS, 4,  B00000000); // Disable PLL = 0 = off
   i2c_write(PCM5122_ADDRESS, 14, B00110000); //DAC clock source selection = 011 = SCK clock
+  
 //  WHA?? THESE DON'T MATTER?
 //  i2c_write(PCM5122_ADDRESS, 28, B00000011); //DAC clock divider (B00001 = divide by 2, etc. 3 = divide by 4, same for next 4 dividers)
 //  i2c_write(PCM5122_ADDRESS, 29, B00000011); //CP clock divider
