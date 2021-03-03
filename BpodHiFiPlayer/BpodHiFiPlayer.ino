@@ -19,7 +19,7 @@
 
 */
 
-// Note: Requires Arduino 1.8.13 or newer, and Teensyduino 1.5.4 (tested on 1.5.4 beta 5)
+// Note: Requires Arduino 1.8.13 or newer, and Teensyduino 1.5.4 (tested on 1.5.4 beta 7)
 
 #include <Audio.h>
 #include <utility/imxrt_hw.h>
@@ -27,11 +27,13 @@
 #include <SPI.h>
 #include "ArCOM.h"
 #include "SdFat.h"
-
+//-------------------USER MACROS-------------------
+// Uncomment one line below to specify target hardware
+ #define DAC2_PRO
+// #define DAC2_HD
+//-------------------------------------------------
 #define FirmwareVersion 1
-#define TEENSY_I2S_MASTER 0 // Set to 1 for Teensy as I2S master. Set to 0 for HiFiBerry as I2S master using its precision clock source. Set to 0 for DAC2 Pro, DAC2 HD
-#define IS_HD 1 // 0 for HiFiBerry DAC2 Pro, 1 for DAC2 HD
-
+#define RESET_PIN 33
 #define BIT_DEPTH 16 // Bits per sample
 #define MAX_SAMPLING_RATE 192000 // Hz
 #define MAX_WAVEFORMS 20 // Number of separate audio waveforms the device can store
@@ -60,7 +62,9 @@
 #define TPA6130A2_REG1 0x1
 #define TPA6130A2_REG2 0x2
 
-byte resetPin = 33;
+#if !defined(DAC2_PRO) && !defined(DAC2_HD)
+#error Error! You must uncomment a macro in the Device Selection section at the top of this sketch to indicate the target HiFiBerry board
+#endif
 
 // microSD setup
 SdFs SDcard;
@@ -99,7 +103,7 @@ ArCOM USBCOM(Serial);
 ArCOM StateMachineCOM(Serial1);
 
 boolean LED_Enabled = true;
-
+byte hardwareVersion = 0;
 byte state = 0;
 byte stateCount = 0;
 byte opCode = 0;
@@ -167,22 +171,20 @@ uint32_t bufferPlaybackPos = 0;
 
 void setup() {
   pinMode(SYNC_PIN, OUTPUT);
-  pinMode(resetPin, OUTPUT);
+  pinMode(RESET_PIN, OUTPUT);
   digitalWrite(SYNC_PIN, LOW);
-  digitalWrite(resetPin, LOW);
+  digitalWrite(RESET_PIN, LOW);
   CodecDAC_begin();
   Wire.begin();
   setAmpPower(false); // Disable headphone amp
   setAmpGain(headphoneAmpGain);
-  #if IS_HD
+  #ifdef DAC2_HD
     setup_SI5351();
     setup_PCM1796();
+    hardwareVersion = 1;
   #else
-    #if TEENSY_I2S_MASTER 
-      setup_PCM5122_I2SSlave();
-    #else
-      setup_PCM5122_I2SMaster();
-    #endif
+    setup_PCM5122_I2SMaster();
+    hardwareVersion = 0;
   #endif
   
   Serial1.begin(1312500);
@@ -221,7 +223,7 @@ void loop() {
       break;
       case 'I': // Return info to PC
         if (opSource == 0) {
-          USBCOM.writeByte(TEENSY_I2S_MASTER);
+          USBCOM.writeByte(hardwareVersion);
           USBCOM.writeByte(BIT_DEPTH);
           USBCOM.writeByte(MAX_WAVEFORMS);
           USBCOM.writeUint32(samplingRate);
@@ -268,14 +270,10 @@ void loop() {
       break;
       case 'S': // Set sampling rate
         samplingRate = USBCOM.readUint32();
-        #if TEENSY_I2S_MASTER 
-          CodecDAC_config_i2s_master();
+        #ifdef DAC2_HD
+          set_PCM1796_SF();
         #else
-          #if IS_HD
-            set_PCM1796_SF();
-          #else
-            setup_PCM5122_I2SMaster();
-          #endif
+          setup_PCM5122_I2SMaster();
         #endif
         setStartSamplePositions();
         USBCOM.writeByte(1); // Acknowledge
@@ -512,11 +510,7 @@ void CodecDAC_config_i2s_slave(void)
 void CodecDAC_begin(void)
 {
   CodecDAC_dma.begin(true); // Allocate the DMA channel first
-  #if TEENSY_I2S_MASTER 
-    CodecDAC_config_i2s_master();
-  #else
-    CodecDAC_config_i2s_slave();
-  #endif
+  CodecDAC_config_i2s_slave();
   CORE_PIN7_CONFIG  = 3;  //1:TX_DATA0 pin 7 on uP
   CodecDAC_dma.TCD->SADDR = myi2s_tx_buffer.int16; //source address
   CodecDAC_dma.TCD->SOFF = 2; // source buffer address increment per transfer in bytes
@@ -785,11 +779,11 @@ void setup_SI5351() {
 }
 
 void setup_PCM1796() {
-  digitalWrite(resetPin, HIGH);
+  digitalWrite(RESET_PIN, HIGH);
   delay(1);
-  digitalWrite(resetPin, LOW);
+  digitalWrite(RESET_PIN, LOW);
   delay(1);
-  digitalWrite(resetPin, HIGH);
+  digitalWrite(RESET_PIN, HIGH);
   delay(10);
   i2c_write(PCM1796_ADDRESS, 16, B11111110); // -0.5 DB
   i2c_write(PCM1796_ADDRESS, 17, B11111110); // -0.5 DB
