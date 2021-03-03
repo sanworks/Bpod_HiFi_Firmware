@@ -136,6 +136,9 @@ boolean syncPinStartFlag = false; // True if a trigger has been received to star
 boolean syncPinEndFlag = false;
 uint32_t syncPinStartTimer = 0;
 uint32_t syncPinEndTimer = 0;
+boolean generateBGNoise = true;
+uint16_t bgNoiseAmplitudeBits = 1000; // Peak to peak amplitude of background white noise in bits
+uint16_t bgHalfAmplitudeBits = 500;
 
 // AM onset/offset envelope
 boolean useAMEnvelope = false; // True if using AM envelope on sound start/stop
@@ -278,6 +281,16 @@ void loop() {
           setup_PCM5122_I2SMaster();
         #endif
         setStartSamplePositions();
+        USBCOM.writeByte(1); // Acknowledge
+      break;
+      case 'N': // Set background white noise level
+        bgNoiseAmplitudeBits = USBCOM.readUint16();
+        bgHalfAmplitudeBits = bgNoiseAmplitudeBits/2;
+        if (bgNoiseAmplitudeBits > 0) {
+          generateBGNoise = true;
+        } else {
+          generateBGNoise = false;
+        }
         USBCOM.writeByte(1); // Acknowledge
       break;
       case 'L':
@@ -610,7 +623,14 @@ void CodecDAC_isr(void)
         }
       }
     } else {
-      myi2s_tx_buffer.int32[0] = 0;
+      if (generateBGNoise) {
+        int16_t noiseSampleL = (rand() % bgNoiseAmplitudeBits) - bgHalfAmplitudeBits;
+        int16_t noiseSampleR = (rand() % bgNoiseAmplitudeBits) - bgHalfAmplitudeBits;
+        myi2s_tx_buffer.int16[0] = noiseSampleL;
+        myi2s_tx_buffer.int16[1] = noiseSampleR;
+      } else {
+        myi2s_tx_buffer.int32[0] = 0;
+      }
     }
   } else {
     if (syncPinStartFlag) {
