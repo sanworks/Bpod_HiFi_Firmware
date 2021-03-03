@@ -769,8 +769,8 @@ void setup_PCM5122_I2SMaster() {
   i2c_write(PCM5122_ADDRESS, 19, B00000000); // Clock sync start
 
   // Finish startup
-  i2c_write(PCM5122_ADDRESS, 61, B00110000); // Set left ch volume attenuation, 48 = 0dB
-  i2c_write(PCM5122_ADDRESS, 62, B00110000); // Set right ch volume attenuation, 48 = 0dB
+  i2c_write(PCM5122_ADDRESS, 61, B00110001); // Set left ch volume attenuation  = -0.5dB
+  i2c_write(PCM5122_ADDRESS, 62, B00110001); // Set right ch volume attenuation = -0.5dB
   i2c_write(PCM5122_ADDRESS, 65, B00000000); // Set mute off
   i2c_write(PCM5122_ADDRESS, 2,  B00000000); // Power --> On
 }
@@ -791,8 +791,8 @@ void setup_PCM1796() {
   delay(1);
   digitalWrite(resetPin, HIGH);
   delay(10);
-  i2c_write(PCM1796_ADDRESS, 16, B11110101); // -5 DB
-  i2c_write(PCM1796_ADDRESS, 17, B11110101); 
+  i2c_write(PCM1796_ADDRESS, 16, B11111110); // -0.5 DB
+  i2c_write(PCM1796_ADDRESS, 17, B11111110); // -0.5 DB
   i2c_write(PCM1796_ADDRESS, 18, B11000000); 
   i2c_write(PCM1796_ADDRESS, 19, B00000000); 
 }
