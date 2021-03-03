@@ -189,11 +189,13 @@ void setup() {
   
   Serial1.begin(1312500);
   SDcard.begin(SdioConfig(FIFO_SDIO));
-  Wave0 = SDcard.open("Wave0.wfm", O_RDWR | O_CREAT);
-  Wave0.seek(waveformStartSamplePosSD[waveIndex] * 4);
+  SDcard.remove("AudioData.dat");
+  Wave0 = SDcard.open("AudioData.dat", O_RDWR | O_CREAT);
+  Wave0.preAllocate(MAX_WAVEFORMS * NBYTES_PER_SAMPLE * MAX_SAMPLING_RATE * MAX_SECONDS_PER_WAVEFORM * 2);
   while (sdBusy()) {}
-
-  // Clear AudioData (initialized to random values)
+  Wave0.seek(waveformStartSamplePosSD[waveIndex] * 4);
+  
+  // Clear AudioData in PSRAM (initialized to random values)
   for (int i = 0; i < MAX_MEMORY_BYTES / 4; i++) {
     AudioData.int32[i] = 0;
   }
@@ -354,28 +356,6 @@ void loop() {
           isPlaying = false;
         }
       break;
-      case 'Y': // Create and/or Clear data file on microSD card, with enough space to store all waveforms (to be optimized for speed)
-        if (opSource == 0) {
-          for (int i = 0; i < FILE_TRANSFER_BUFFER_SIZE; i++) {
-            fileTransferBuffer[i] = 65;
-          }
-          Wave0.close();
-          SDcard.remove("Wave0.wfm");
-          Wave0 = SDcard.open("Wave0.wfm", O_RDWR | O_CREAT);
-          Wave0.seek(0); // Set write position to first byte
-          for (uint32_t i = 0; i < (MAX_WAVEFORMS * NBYTES_PER_SAMPLE * MAX_SAMPLING_RATE * MAX_SECONDS_PER_WAVEFORM * 2) / FILE_TRANSFER_BUFFER_SIZE; i++) {
-            Wave0.write(fileTransferBuffer, FILE_TRANSFER_BUFFER_SIZE); // Write fileTransferBufferSize zeros
-            ready = true;
-            while (sdBusy()) {
-              // Do something here.
-            }
-          }
-          delayMicroseconds(100000);
-          Wave0.close();
-          Wave0 = SDcard.open("Wave0.wfm", O_RDWR | O_CREAT);
-          USBCOM.writeByte(1); // Acknowledge
-        }
-        break;
     }
   }
   // MicroSD transfer
