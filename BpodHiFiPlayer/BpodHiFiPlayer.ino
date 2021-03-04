@@ -48,6 +48,7 @@
 #define FILE_TRANSFER_BUFFER_SIZE_SAMPLES FILE_TRANSFER_BUFFER_SIZE/4
 #define MAX_MEMORY_BYTES FILE_TRANSFER_BUFFER_SIZE*MAX_WAVEFORMS
 #define NBYTES_PER_SAMPLE BIT_DEPTH/4 // 4 = 16 bit stereo, 8 = 24 bit stereo (encoded with 32 bit ints)
+#define HALF_MEMORY_SD MAX_WAVEFORMS * NBYTES_PER_SAMPLE * MAX_SAMPLING_RATE * MAX_SECONDS_PER_WAVEFORM
 
 // --- TI PCM5122 DAC macros ---
 
@@ -108,13 +109,13 @@ byte state = 0;
 byte stateCount = 0;
 byte opCode = 0;
 byte opSource = 0;
-byte waveIndex = 0;
-uint32_t nSamples[MAX_WAVEFORMS] = {0};
-uint32_t nWaveformBytes[MAX_WAVEFORMS] = {0}; //Number of bytes in each waveform
-boolean newWaveLoaded[MAX_WAVEFORMS] = {false}; // True if a new sound was loaded; on next trial start signal, currentLoadBuffer is swapped.
-uint32_t waveformStartSamplePosSD[MAX_WAVEFORMS] = {0};
-uint32_t waveformEndSamplePosSD[MAX_WAVEFORMS] = {0};
-uint32_t waveformStartSamplePosRAM[MAX_WAVEFORMS] = {0};
+byte waveIndex = 0; // Wave currently playing
+byte loadIndex = 0; // Wave currently loading
+uint32_t nSamples[MAX_WAVEFORMS][2] = {0};
+uint32_t nWaveformBytes[MAX_WAVEFORMS][2] = {0}; //Number of bytes in each waveform
+uint32_t waveformStartPosSD[MAX_WAVEFORMS][2] = {0};
+uint32_t waveformEndPosSD[MAX_WAVEFORMS][2] = {0};
+uint32_t waveformStartPosRAM[MAX_WAVEFORMS] = {0};
 
 uint32_t currentPlaybackPos = 0;
 uint32_t bufferPosL = 0;
@@ -129,7 +130,7 @@ boolean sdStartFlag = false;
 uint32_t playBufferPos = 0; // Position of current sample in the current data buffer
 uint32_t ramBufferPlaybackPos = 0;
 uint32_t playbackFilePos = 0; // Position of current sample in the data file being played from microSD -> DAC
-byte currentPlayBuffer = 0; // Current buffer for each channel (a double buffering scheme allows one to be filled while the other is read)
+byte currentPlayBuffer = 0; // Current buffer for SD reads for each channel (a double buffering scheme allows one to be filled while the other is read)
 byte PowerState = 0;
 boolean schedulePlaybackStop = false;
 boolean syncPinStartFlag = false; // True if a trigger has been received to start audio playback
@@ -139,6 +140,11 @@ uint32_t syncPinEndTimer = 0;
 boolean generateBGNoise = true;
 uint16_t synthAmplitudeBits = 1000; // Peak to peak amplitude of background white noise in bits
 uint16_t synthHalfAmplitudeBits = 500;
+
+// Sound slot management
+byte playSlot[MAX_WAVEFORMS] = {0}; // 0 or 1. New waveforms are loaded into the slot not in use, and newly loaded waveforms are made current by '*' command
+boolean newWaveLoaded[MAX_WAVEFORMS] = {false}; // True if a new waveform was loaded and not yet made current with '*' command
+byte currentPlaySlot = 0; // playSlot for currently playing sound
 
 // AM onset/offset envelope
 boolean useAMEnvelope = false; // True if using AM envelope on sound start/stop
@@ -152,12 +158,17 @@ union { // Floating point amplitude in range 1 (max intensity) -> 0 (silent). Da
     float floatArray[MAX_ENVELOPE_SIZE];
 } AMenvelope; // Default hardware timer period during playback, in microseconds (100 = 10kHz). Set as a Union so it can be read as bytes.
 
-
+// AudioDataSideA and B form a double-sided buffer for playback of initial samples from PSRAM without interfering with simultaneous loading of next trial's sounds
 EXTMEM union {
   byte byteArray[MAX_MEMORY_BYTES];
   int16_t int16[MAX_MEMORY_BYTES / 2];
   int32_t int32[MAX_MEMORY_BYTES / 4];
-} AudioData;
+} AudioDataSideA;
+EXTMEM union {
+  byte byteArray[MAX_MEMORY_BYTES];
+  int16_t int16[MAX_MEMORY_BYTES / 2];
+  int32_t int32[MAX_MEMORY_BYTES / 4];
+} AudioDataSideB;
 
 union {
     byte byteArray[FILE_TRANSFER_BUFFER_SIZE];
@@ -191,18 +202,19 @@ void setup() {
   #endif
   
   Serial1.begin(1312500);
+  setStartSamplePositions();
   SDcard.begin(SdioConfig(FIFO_SDIO));
   SDcard.remove("AudioData.dat");
   Wave0 = SDcard.open("AudioData.dat", O_RDWR | O_CREAT);
-  Wave0.preAllocate(MAX_WAVEFORMS * NBYTES_PER_SAMPLE * MAX_SAMPLING_RATE * MAX_SECONDS_PER_WAVEFORM * 2);
+  Wave0.preAllocate(HALF_MEMORY_SD * 2);
   while (sdBusy()) {}
-  Wave0.seek(waveformStartSamplePosSD[waveIndex] * 4);
+  Wave0.seek(waveformStartPosSD[waveIndex][playSlot[waveIndex]] * 4);
   
   // Clear AudioData in PSRAM (initialized to random values)
   for (int i = 0; i < MAX_MEMORY_BYTES / 4; i++) {
-    AudioData.int32[i] = 0;
+    AudioDataSideA.int32[i] = 0;
+    AudioDataSideB.int32[i] = 0;
   }
-  setStartSamplePositions();
 }
 
 void loop() {
@@ -295,27 +307,36 @@ void loop() {
       break;
       case 'L':
         if (opSource == 0) {
-          waveIndex = USBCOM.readByte();
-          if (waveIndex < MAX_WAVEFORMS) { // Sanity check
-            nSamples[waveIndex] = USBCOM.readUint32();
-            nWaveformBytes[waveIndex] = nSamples[waveIndex] * 4;
-            Wave0.seek(waveformStartSamplePosSD[waveIndex] * 4);
+          loadIndex = USBCOM.readByte();
+          byte loadSlot = 1-playSlot[loadIndex];
+          if (loadIndex < MAX_WAVEFORMS) { // Sanity check
+            nSamples[loadIndex][loadSlot] = USBCOM.readUint32();
+            nWaveformBytes[loadIndex][loadSlot] = nSamples[loadIndex][loadSlot] * 4;
+            Wave0.seek(waveformStartPosSD[loadIndex][loadSlot] * 4);
             while (sdBusy()) {}
-            nFullReads = (unsigned long)(floor((double)nWaveformBytes[waveIndex] / (double)FILE_TRANSFER_BUFFER_SIZE));
+            nFullReads = (unsigned long)(floor((double)nWaveformBytes[loadIndex][loadSlot] / (double)FILE_TRANSFER_BUFFER_SIZE));
             for (int i = 0; i < nFullReads; i++) {
               while (USBCOM.available() == 0) {}
               if (i == 0) {
-                USBCOM.readByteArray(AudioData.byteArray + (waveformStartSamplePosRAM[waveIndex]*4), FILE_TRANSFER_BUFFER_SIZE);
+                if (playSlot[loadIndex] == 0) {
+                  USBCOM.readByteArray(AudioDataSideB.byteArray + (waveformStartPosRAM[loadIndex]*4), FILE_TRANSFER_BUFFER_SIZE);
+                } else {
+                  USBCOM.readByteArray(AudioDataSideA.byteArray + (waveformStartPosRAM[loadIndex]*4), FILE_TRANSFER_BUFFER_SIZE);
+                }
               } else {
                 USBCOM.readByteArray((char*)fileTransferBuffer, FILE_TRANSFER_BUFFER_SIZE);
                 Wave0.write(fileTransferBuffer, FILE_TRANSFER_BUFFER_SIZE);
                 while (sdBusy()) {}
               }
             }
-            partialReadSize = (nWaveformBytes[waveIndex]) - (nFullReads * FILE_TRANSFER_BUFFER_SIZE);
+            partialReadSize = (nWaveformBytes[loadIndex][loadSlot]) - (nFullReads * FILE_TRANSFER_BUFFER_SIZE);
             if (partialReadSize > 0) {
               if (nFullReads == 0) {
-                USBCOM.readByteArray(AudioData.byteArray + (waveformStartSamplePosRAM[waveIndex]*4), partialReadSize);
+                if (playSlot[loadIndex] == 0) {
+                  USBCOM.readByteArray(AudioDataSideB.byteArray + (waveformStartPosRAM[loadIndex]*4), partialReadSize);
+                } else {
+                  USBCOM.readByteArray(AudioDataSideA.byteArray + (waveformStartPosRAM[loadIndex]*4), partialReadSize);
+                }
               } else {
                 USBCOM.readByteArray((char*)fileTransferBuffer, partialReadSize);
                 Wave0.write(fileTransferBuffer, partialReadSize);
@@ -323,11 +344,22 @@ void loop() {
               }
             }
             USBCOM.writeByte(1); Serial.send_now();
-            newWaveLoaded[waveIndex] = true;
+            newWaveLoaded[loadIndex] = true;
           }
-          waveformEndSamplePosSD[waveIndex] = (waveformStartSamplePosSD[waveIndex] + nSamples[waveIndex]);
+          waveformEndPosSD[loadIndex][loadSlot] = (waveformStartPosSD[loadIndex][loadSlot] + nSamples[loadIndex][loadSlot]);
         }
-        break;
+      break;
+      case '*':
+        for (int i = 0; i<MAX_WAVEFORMS; i++) {
+          if (newWaveLoaded[i]) {
+            playSlot[i] = 1-playSlot[i];
+            newWaveLoaded[i] = false;
+          }
+        }
+        if (opSource == 0) {
+          USBCOM.writeByte(1);
+        }
+      break;
       case 'P':
         switch (opSource) {
           case 0:
@@ -340,8 +372,9 @@ void loop() {
         if (opSource == 1) {
           StateMachineCOM.writeByte(1);
         }
-        currentPlaybackPos = waveformStartSamplePosSD[waveIndex];
-        ramBufferPlaybackPos = waveformStartSamplePosRAM[waveIndex];
+        currentPlaySlot = playSlot[waveIndex];
+        currentPlaybackPos = waveformStartPosSD[waveIndex][currentPlaySlot];
+        ramBufferPlaybackPos = waveformStartPosRAM[waveIndex];
         currentPlayBuffer = 1;
         bufferPlaybackPos = 0;
         playbackTime = 0;
@@ -531,8 +564,13 @@ void CodecDAC_isr(void)
     if (isPlaying) {
       if (inEnvelope) {
           if (playingFromRamBuffer) {
-            myi2s_tx_buffer.int16[0] = AudioData.int16[ramBufferPlaybackPos*2];
-            myi2s_tx_buffer.int16[1] = AudioData.int16[(ramBufferPlaybackPos*2)+1];
+            if (currentPlaySlot == 0) {
+              myi2s_tx_buffer.int16[0] = AudioDataSideA.int16[ramBufferPlaybackPos*2];
+              myi2s_tx_buffer.int16[1] = AudioDataSideA.int16[(ramBufferPlaybackPos*2)+1];
+            } else {
+              myi2s_tx_buffer.int16[0] = AudioDataSideB.int16[ramBufferPlaybackPos*2];
+              myi2s_tx_buffer.int16[1] = AudioDataSideB.int16[(ramBufferPlaybackPos*2)+1];
+            }
             ramBufferPlaybackPos++;
           } else {
             if (currentPlayBuffer == 0) {
@@ -561,7 +599,11 @@ void CodecDAC_isr(void)
           }
       } else {
         if (playingFromRamBuffer) {
-          myi2s_tx_buffer.int32[0] = AudioData.int32[ramBufferPlaybackPos];
+          if (playSlot[waveIndex] == 0) {
+            myi2s_tx_buffer.int32[0] = AudioDataSideA.int32[ramBufferPlaybackPos];
+          } else {
+            myi2s_tx_buffer.int32[0] = AudioDataSideB.int32[ramBufferPlaybackPos];
+          }
           ramBufferPlaybackPos++;
         } else {
           if (currentPlayBuffer == 0) {
@@ -574,7 +616,7 @@ void CodecDAC_isr(void)
       }
 
       currentPlaybackPos++;
-      if (currentPlaybackPos == (waveformStartSamplePosSD[waveIndex] + FILE_TRANSFER_BUFFER_SIZE_SAMPLES)) {
+      if (currentPlaybackPos == (waveformStartPosSD[waveIndex][currentPlaySlot] + FILE_TRANSFER_BUFFER_SIZE_SAMPLES)) {
         playingFromRamBuffer = false;
         currentPlayBuffer = 1-currentPlayBuffer;
         sdLoadFlag = true;
@@ -599,9 +641,9 @@ void CodecDAC_isr(void)
             }
           }
         }
-        if (currentPlaybackPos == waveformEndSamplePosSD[waveIndex]) {
-           currentPlaybackPos = waveformStartSamplePosSD[waveIndex];
-           ramBufferPlaybackPos = waveformStartSamplePosRAM[waveIndex];
+        if (currentPlaybackPos == waveformEndPosSD[waveIndex][currentPlaySlot]) {
+           currentPlaybackPos = waveformStartPosSD[waveIndex][currentPlaySlot];
+           ramBufferPlaybackPos = waveformStartPosRAM[waveIndex];
            currentPlayBuffer = 1;
            bufferPlaybackPos = 0;
            playbackFilePos = currentPlaybackPos * 4; // Sound start position on microSD card in bytes
@@ -612,13 +654,13 @@ void CodecDAC_isr(void)
         }
       } else {
         if (useAMEnvelope) {
-          if (currentPlaybackPos == waveformEndSamplePosSD[waveIndex] - envelopeSize - 1) {
+          if (currentPlaybackPos == waveformEndPosSD[waveIndex][currentPlaySlot] - envelopeSize - 1) {
             inEnvelope = true;
             envelopeDir = 1;
             envelopePos = 0;
           }
         }
-        if (currentPlaybackPos == waveformEndSamplePosSD[waveIndex]) {
+        if (currentPlaybackPos == waveformEndPosSD[waveIndex][currentPlaySlot]) {
           schedulePlaybackStop = true;
         }
       }
@@ -817,8 +859,9 @@ void set_PCM1796_SF() {
 
 void setStartSamplePositions() {
   for (int i = 0; i < MAX_WAVEFORMS; i++) {
-    waveformStartSamplePosSD[i] = i * samplingRate * MAX_SECONDS_PER_WAVEFORM;
-    waveformStartSamplePosRAM[i] = i*FILE_TRANSFER_BUFFER_SIZE_SAMPLES;
+    waveformStartPosRAM[i] = i*FILE_TRANSFER_BUFFER_SIZE_SAMPLES;
+    waveformStartPosSD[i][0] = (i * samplingRate * MAX_SECONDS_PER_WAVEFORM);
+    waveformStartPosSD[i][1] = (i * samplingRate * MAX_SECONDS_PER_WAVEFORM) + (HALF_MEMORY_SD/NBYTES_PER_SAMPLE);
   }
 }
 
