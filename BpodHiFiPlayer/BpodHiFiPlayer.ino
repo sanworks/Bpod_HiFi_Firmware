@@ -137,8 +137,8 @@ boolean syncPinEndFlag = false;
 uint32_t syncPinStartTimer = 0;
 uint32_t syncPinEndTimer = 0;
 boolean generateBGNoise = true;
-uint16_t bgNoiseAmplitudeBits = 1000; // Peak to peak amplitude of background white noise in bits
-uint16_t bgHalfAmplitudeBits = 500;
+uint16_t synthAmplitudeBits = 1000; // Peak to peak amplitude of background white noise in bits
+uint16_t synthHalfAmplitudeBits = 500;
 
 // AM onset/offset envelope
 boolean useAMEnvelope = false; // True if using AM envelope on sound start/stop
@@ -284,9 +284,9 @@ void loop() {
         USBCOM.writeByte(1); // Acknowledge
       break;
       case 'N': // Set background white noise level
-        bgNoiseAmplitudeBits = USBCOM.readUint16();
-        bgHalfAmplitudeBits = bgNoiseAmplitudeBits/2;
-        if (bgNoiseAmplitudeBits > 0) {
+        synthAmplitudeBits = USBCOM.readUint16();
+        synthHalfAmplitudeBits = synthAmplitudeBits/2;
+        if (synthAmplitudeBits > 0) {
           generateBGNoise = true;
         } else {
           generateBGNoise = false;
@@ -624,8 +624,8 @@ void CodecDAC_isr(void)
       }
     } else {
       if (generateBGNoise) {
-        int16_t noiseSampleL = (rand() % bgNoiseAmplitudeBits) - bgHalfAmplitudeBits;
-        int16_t noiseSampleR = (rand() % bgNoiseAmplitudeBits) - bgHalfAmplitudeBits;
+        int16_t noiseSampleL = (rand() % synthAmplitudeBits) - synthHalfAmplitudeBits;
+        int16_t noiseSampleR = (rand() % synthAmplitudeBits) - synthHalfAmplitudeBits;
         myi2s_tx_buffer.int16[0] = noiseSampleL;
         myi2s_tx_buffer.int16[1] = noiseSampleR;
       } else {
