@@ -130,6 +130,8 @@ boolean sdStartFlag = false;
 uint32_t playBufferPos = 0; // Position of current sample in the current data buffer
 uint32_t ramBufferPlaybackPos = 0;
 uint32_t playbackFilePos = 0; // Position of current sample in the data file being played from microSD -> DAC
+uint32_t loadingFilePos = 0; // Position of current sample in data being loaded to from USB -> microSD
+uint32_t nBuffersLoaded = 0; // Number of buffers transferred from USB -> microSD in safe load mode
 byte currentPlayBuffer = 0; // Current buffer for SD reads for each channel (a double buffering scheme allows one to be filled while the other is read)
 byte PowerState = 0;
 boolean schedulePlaybackStop = false;
@@ -140,11 +142,15 @@ uint32_t syncPinEndTimer = 0;
 boolean generateBGNoise = true;
 uint16_t synthAmplitudeBits = 1000; // Peak to peak amplitude of background white noise in bits
 uint16_t synthHalfAmplitudeBits = 500;
+boolean safeLoadingToSD = false;
+uint32_t thisReadTransferSize = 0; // Transfer size of current USB -> microSD read op
+uint32_t nTotalReads = 0; // Number of buffers to read in USB -> microSD transmission
 
 // Sound slot management
 byte playSlot[MAX_WAVEFORMS] = {0}; // 0 or 1. New waveforms are loaded into the slot not in use, and newly loaded waveforms are made current by '*' command
 boolean newWaveLoaded[MAX_WAVEFORMS] = {false}; // True if a new waveform was loaded and not yet made current with '*' command
 byte currentPlaySlot = 0; // playSlot for currently playing sound
+byte loadSlot = 0;
 
 // AM onset/offset envelope
 boolean useAMEnvelope = false; // True if using AM envelope on sound start/stop
@@ -308,45 +314,54 @@ void loop() {
       case 'L':
         if (opSource == 0) {
           loadIndex = USBCOM.readByte();
-          byte loadSlot = 1-playSlot[loadIndex];
+          loadSlot = 1-playSlot[loadIndex];
           if (loadIndex < MAX_WAVEFORMS) { // Sanity check
             nSamples[loadIndex][loadSlot] = USBCOM.readUint32();
             nWaveformBytes[loadIndex][loadSlot] = nSamples[loadIndex][loadSlot] * 4;
-            Wave0.seek(waveformStartPosSD[loadIndex][loadSlot] * 4);
-            while (sdBusy()) {}
             nFullReads = (unsigned long)(floor((double)nWaveformBytes[loadIndex][loadSlot] / (double)FILE_TRANSFER_BUFFER_SIZE));
-            for (int i = 0; i < nFullReads; i++) {
+            partialReadSize = nWaveformBytes[loadIndex][loadSlot] - (nFullReads*FILE_TRANSFER_BUFFER_SIZE);
+            nTotalReads = nFullReads + (partialReadSize > 0);
+            Wave0.seek(waveformStartPosSD[loadIndex][loadSlot] * 4);
+            while (sdBusy()) {}            
+            for (int i = 0; i < nTotalReads; i++) {
+              if ((i == nTotalReads - 1) && (partialReadSize > 0)) {
+                thisReadTransferSize = partialReadSize;
+              } else {
+                thisReadTransferSize = FILE_TRANSFER_BUFFER_SIZE;
+              }
               while (USBCOM.available() == 0) {}
               if (i == 0) {
                 if (playSlot[loadIndex] == 0) {
-                  USBCOM.readByteArray(AudioDataSideB.byteArray + (waveformStartPosRAM[loadIndex]*4), FILE_TRANSFER_BUFFER_SIZE);
+                  USBCOM.readByteArray(AudioDataSideB.byteArray + (waveformStartPosRAM[loadIndex]*4), thisReadTransferSize);
                 } else {
-                  USBCOM.readByteArray(AudioDataSideA.byteArray + (waveformStartPosRAM[loadIndex]*4), FILE_TRANSFER_BUFFER_SIZE);
+                  USBCOM.readByteArray(AudioDataSideA.byteArray + (waveformStartPosRAM[loadIndex]*4), thisReadTransferSize);
                 }
               } else {
-                USBCOM.readByteArray((char*)fileTransferBuffer, FILE_TRANSFER_BUFFER_SIZE);
-                Wave0.write(fileTransferBuffer, FILE_TRANSFER_BUFFER_SIZE);
+                USBCOM.readByteArray((char*)fileTransferBuffer, thisReadTransferSize);
+                Wave0.write(fileTransferBuffer, thisReadTransferSize);
                 while (sdBusy()) {}
               }
             }
-            partialReadSize = (nWaveformBytes[loadIndex][loadSlot]) - (nFullReads * FILE_TRANSFER_BUFFER_SIZE);
-            if (partialReadSize > 0) {
-              if (nFullReads == 0) {
-                if (playSlot[loadIndex] == 0) {
-                  USBCOM.readByteArray(AudioDataSideB.byteArray + (waveformStartPosRAM[loadIndex]*4), partialReadSize);
-                } else {
-                  USBCOM.readByteArray(AudioDataSideA.byteArray + (waveformStartPosRAM[loadIndex]*4), partialReadSize);
-                }
-              } else {
-                USBCOM.readByteArray((char*)fileTransferBuffer, partialReadSize);
-                Wave0.write(fileTransferBuffer, partialReadSize);
-                while (sdBusy()) {}
-              }
-            }
-            USBCOM.writeByte(1); Serial.send_now();
             newWaveLoaded[loadIndex] = true;
+            waveformEndPosSD[loadIndex][loadSlot] = (waveformStartPosSD[loadIndex][loadSlot] + nSamples[loadIndex][loadSlot]);
+            USBCOM.writeByte(1); Serial.send_now();
           }
-          waveformEndPosSD[loadIndex][loadSlot] = (waveformStartPosSD[loadIndex][loadSlot] + nSamples[loadIndex][loadSlot]);
+        }
+      break;
+      case '>':
+        if (opSource == 0) {
+          loadIndex = USBCOM.readByte();
+          loadSlot = 1-playSlot[loadIndex];
+          if (loadIndex < MAX_WAVEFORMS) {
+            nSamples[loadIndex][loadSlot] = USBCOM.readUint32();
+            nWaveformBytes[loadIndex][loadSlot] = nSamples[loadIndex][loadSlot] * 4;
+            nFullReads = (unsigned long)(floor((double)nWaveformBytes[loadIndex][loadSlot] / (double)FILE_TRANSFER_BUFFER_SIZE));
+            partialReadSize = nWaveformBytes[loadIndex][loadSlot] - (nFullReads*FILE_TRANSFER_BUFFER_SIZE);
+            nTotalReads = nFullReads + (partialReadSize > 0);
+            loadingFilePos = waveformStartPosSD[loadIndex][loadSlot] * 4;
+            nBuffersLoaded = 0;
+            safeLoadingToSD = true;
+          }
         }
       break;
       case '*':
@@ -406,18 +421,52 @@ void loop() {
   }
   // MicroSD transfer
   if (sdStartFlag) {
-    Wave0.seek(playbackFilePos);
+    //Wave0.seek(playbackFilePos);
     sdStartFlag = false;
   }
   if (isPlaying && sdLoadFlag) {
     sdLoadFlag = false;
+    Wave0.seek(playbackFilePos);
+    while (sdBusy()) {}   
     if (currentPlayBuffer == 1) {
       Wave0.read(BufferA.byteArray, FILE_TRANSFER_BUFFER_SIZE);
     } else {
       Wave0.read(BufferB.byteArray, FILE_TRANSFER_BUFFER_SIZE);
     }
+    while (sdBusy()) {}   
     playbackFilePos += FILE_TRANSFER_BUFFER_SIZE;
-  }  
+  } else if(safeLoadingToSD) {
+    if (nBuffersLoaded < nTotalReads) {
+      if ((nBuffersLoaded == nTotalReads - 1) && (partialReadSize > 0)) {
+        thisReadTransferSize = partialReadSize;
+      } else {
+        thisReadTransferSize = FILE_TRANSFER_BUFFER_SIZE;
+      }
+      while (USBCOM.available() == 0) {}
+      if (nBuffersLoaded == 0) {
+        if (playSlot[loadIndex] == 0) {
+          USBCOM.readByteArray(AudioDataSideB.byteArray + (waveformStartPosRAM[loadIndex]*4), thisReadTransferSize);
+        } else {
+          USBCOM.readByteArray(AudioDataSideA.byteArray + (waveformStartPosRAM[loadIndex]*4), thisReadTransferSize);
+        }
+      } else {
+        while (sdBusy()) {}   
+        Wave0.seek(loadingFilePos);
+        while (sdBusy()) {}   
+        USBCOM.readByteArray((char*)fileTransferBuffer, thisReadTransferSize);
+        Wave0.write(fileTransferBuffer, thisReadTransferSize);
+        while (sdBusy()) {}
+        loadingFilePos += thisReadTransferSize;
+      }
+      nBuffersLoaded++;
+      if (nBuffersLoaded == nTotalReads) {
+        safeLoadingToSD = false;
+        newWaveLoaded[loadIndex] = true;
+        waveformEndPosSD[loadIndex][loadSlot] = (waveformStartPosSD[loadIndex][loadSlot] + nSamples[loadIndex][loadSlot]);
+        USBCOM.writeByte(1); Serial.send_now();
+      }
+    }    
+  }
 }
 
 
