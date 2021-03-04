@@ -43,7 +43,7 @@
 #define SYNC_PIN_DELAY_ONSET 22 // Number of DMA ISR calls before sync line goes high after sound onset
 #define SYNC_PIN_DELAY_OFFSET 27 // Number of DMA ISR calls before sync line goes low after sound end
 #define FILE_TRANSFER_BUFFER_SIZE 64000
-#define SAFE_TRANSFER_BUFFER_SIZE 64000
+#define SAFE_TRANSFER_BUFFER_SIZE 64000 // Must be <= FILE_TRANSFER_BUFFER_SIZE
 
 #define FILE_TRANSFER_BUFFER_SIZE_SAMPLES FILE_TRANSFER_BUFFER_SIZE/4
 #define MAX_MEMORY_BYTES FILE_TRANSFER_BUFFER_SIZE*MAX_WAVEFORMS
@@ -100,7 +100,7 @@ unsigned long partialReadSize = 0;
 ArCOM USBCOM(Serial);
 ArCOM StateMachineCOM(Serial1);
 
-boolean LED_Enabled = true;
+boolean LED_Enabled = false;
 byte hardwareVersion = 0;
 byte state = 0;
 byte stateCount = 0;
@@ -218,15 +218,18 @@ void setup() {
     AudioDataSideA.int32[i] = 0;
     AudioDataSideB.int32[i] = 0;
   }
+  #ifdef DAC2_PRO
+    // Turn on LED (remove this in deployment version)
+    LED_Enabled = true;
+    setup_PCM5122_I2SMaster();
+  #endif
 }
 
 void loop() {
   opCode = 0;
-  if (USBCOM.available() > 0) {
-    if (!safeLoadingToSD) {
+  if ((USBCOM.available() > 0) && !safeLoadingToSD) {
       opCode = USBCOM.readByte();
       opSource = 0;
-    }
   } else if (StateMachineCOM.available() > 0) {
     opCode = StateMachineCOM.readByte();
     opSource = 1;
@@ -904,7 +907,9 @@ void setStartSamplePositions() {
   for (int i = 0; i < MAX_WAVEFORMS; i++) {
     waveformStartPosRAM[i] = i*FILE_TRANSFER_BUFFER_SIZE_SAMPLES;
     waveformStartPosSD[i][0] = (i * samplingRate * MAX_SECONDS_PER_WAVEFORM);
+    waveformEndPosSD[i][0] = waveformStartPosSD[i][0] + (samplingRate * MAX_SECONDS_PER_WAVEFORM);
     waveformStartPosSD[i][1] = (i * samplingRate * MAX_SECONDS_PER_WAVEFORM) + (HALF_MEMORY_SD/NBYTES_PER_SAMPLE);
+    waveformEndPosSD[i][1] = waveformStartPosSD[i][1] + (samplingRate * MAX_SECONDS_PER_WAVEFORM);
   }
 }
 
