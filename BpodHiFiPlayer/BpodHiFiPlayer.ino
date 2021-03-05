@@ -135,9 +135,19 @@ boolean syncPinStartFlag = false; // True if a trigger has been received to star
 boolean syncPinEndFlag = false;
 uint32_t syncPinStartTimer = 0;
 uint32_t syncPinEndTimer = 0;
-boolean generateBGNoise = false;
-uint16_t synthAmplitudeBits = 1000; // Peak to peak amplitude of background white noise in bits
-uint16_t synthHalfAmplitudeBits = 500;
+
+// Synth
+boolean generateSynth = false;
+uint32_t synthAmplitudeBits = 1000; // Peak to peak amplitude of background white noise in bits
+uint32_t synthHalfAmplitudeBits = 500;
+int16_t synthSampleL = 0;
+int16_t synthSampleR = 0;
+double synthTime = 0;
+double synthTimeStep = 0;
+double synthFreq = 1000;
+const double twoPi = 6.28318530717958;
+
+byte synthWaveform = 0; // 0 = White Noise 1 = Sine
 boolean safeLoadingToSD = false;
 uint32_t thisReadTransferSize = 0; // Transfer size of current USB -> microSD read op
 uint32_t nTotalReads = 0; // Number of buffers to read in USB -> microSD transmission
@@ -301,17 +311,35 @@ void loop() {
           setup_PCM5122_I2SMaster();
         #endif
         setStartSamplePositions();
+        synthTimeStep = twoPi/((double)samplingRate/synthFreq);
         USBCOM.writeByte(1); // Acknowledge
       break;
-      case 'N': // Set background white noise level
+      case 'N': // Set synth amplitude
         synthAmplitudeBits = USBCOM.readUint16();
         synthHalfAmplitudeBits = synthAmplitudeBits/2;
         if (synthAmplitudeBits > 0) {
-          generateBGNoise = true;
+          if (!generateSynth) {
+            synthTime = 0;
+          }
+          generateSynth = true;
         } else {
-          generateBGNoise = false;
+          generateSynth = false;
         }
         USBCOM.writeByte(1); // Acknowledge
+      break;
+      case 'Q': // Set synth frequency
+        if (opSource == 0) {
+          uint32_t newFreq = USBCOM.readUint32();  
+          synthFreq = ((double)newFreq)/1000; 
+          synthTimeStep = twoPi/((double)samplingRate/synthFreq);
+          USBCOM.writeByte(1); // Acknowledge
+        }
+      break;
+      case 'W': // Set synth waveform
+        if (opSource == 0) {
+          synthWaveform = USBCOM.readByte();
+          USBCOM.writeByte(1); // Acknowledge
+        }
       break;
       case 'L':
         if (opSource == 0) {
@@ -711,11 +739,20 @@ void CodecDAC_isr(void)
         }
       }
     } else {
-      if (generateBGNoise) {
-        int16_t noiseSampleL = (rand() % synthAmplitudeBits) - synthHalfAmplitudeBits;
-        int16_t noiseSampleR = (rand() % synthAmplitudeBits) - synthHalfAmplitudeBits;
-        myi2s_tx_buffer.int16[0] = noiseSampleL;
-        myi2s_tx_buffer.int16[1] = noiseSampleR;
+      if (generateSynth) {
+        switch (synthWaveform) {
+          case 0: // White Noise
+            synthSampleL = (rand() % synthAmplitudeBits) - synthHalfAmplitudeBits;
+            synthSampleR = (rand() % synthAmplitudeBits) - synthHalfAmplitudeBits;
+          break;
+          case 1: // Sine
+            synthSampleL = round(sin(synthTime)*synthAmplitudeBits);
+            synthSampleR = synthSampleL;
+            synthTime += synthTimeStep;            
+          break;
+        }
+        myi2s_tx_buffer.int16[0] = synthSampleL;
+        myi2s_tx_buffer.int16[1] = synthSampleR;
       } else {
         myi2s_tx_buffer.int32[0] = 0;
       }
