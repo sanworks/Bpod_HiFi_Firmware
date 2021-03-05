@@ -775,8 +775,6 @@ void CodecDAC_isr(void)
       }
     }
   }
-  arm_dcache_flush_delete(myi2s_tx_buffer.int32, sizeof(myi2s_tx_buffer.int32));
-  CodecDAC_dma.clearInterrupt();
   isActiveInterrupt = 1 - isActiveInterrupt;
   if (schedulePlaybackStop) {
     isPlaying = false;
@@ -784,6 +782,8 @@ void CodecDAC_isr(void)
     syncPinEndFlag = true;
     syncPinEndTimer = 0;
   }
+  arm_dcache_flush_delete(myi2s_tx_buffer.int32, sizeof(myi2s_tx_buffer.int32));
+  CodecDAC_dma.clearInterrupt();
 }
 
 bool sdBusy() {
