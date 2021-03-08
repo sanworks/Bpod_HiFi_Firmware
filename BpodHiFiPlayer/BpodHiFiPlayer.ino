@@ -42,13 +42,14 @@
 #define SYNC_PIN 30 // GPIO pin controlling SYNC BNC output
 #define SYNC_PIN_DELAY_ONSET 22 // Number of DMA ISR calls before sync line goes high after sound onset
 #define SYNC_PIN_DELAY_OFFSET 27 // Number of DMA ISR calls before sync line goes low after sound end
-#define FILE_TRANSFER_BUFFER_SIZE 64000
-#define SAFE_TRANSFER_BUFFER_SIZE 64000 // Must be <= FILE_TRANSFER_BUFFER_SIZE
+#define FILE_TRANSFER_BUFFER_SIZE 128000
+#define SAFE_TRANSFER_BUFFER_SIZE 128000 // Must be a factor of FILE_TRANSFER_BUFFER_SIZE
 
 #define FILE_TRANSFER_BUFFER_SIZE_SAMPLES FILE_TRANSFER_BUFFER_SIZE/4
 #define MAX_MEMORY_BYTES FILE_TRANSFER_BUFFER_SIZE*MAX_WAVEFORMS
 #define NBYTES_PER_SAMPLE BIT_DEPTH/4 // 4 = 16 bit stereo, 8 = 24 bit stereo (encoded with 32 bit ints)
 #define HALF_MEMORY_SD MAX_WAVEFORMS * NBYTES_PER_SAMPLE * MAX_SAMPLING_RATE * MAX_SECONDS_PER_WAVEFORM
+#define SAFE_BUFFERS_PER_FILEBUFFER FILE_TRANSFER_BUFFER_SIZE / SAFE_TRANSFER_BUFFER_SIZE
 
 // --- TI PCM5122 DAC macros ---
 
@@ -66,6 +67,8 @@
 #if !defined(DAC2_PRO) && !defined(DAC2_HD)
 #error Error! You must uncomment a macro in the Device Selection section at the top of this sketch to indicate the target HiFiBerry board
 #endif
+
+IntervalTimer hardwareTimer;
 
 // microSD setup
 SdFs SDcard;
@@ -127,6 +130,7 @@ uint32_t playBufferPos = 0; // Position of current sample in the current data bu
 uint32_t ramBufferPlaybackPos = 0;
 uint32_t playbackFilePos = 0; // Position of current sample in the data file being played from microSD -> DAC
 uint32_t loadingFilePos = 0; // Position of current sample in data being loaded to from USB -> microSD
+uint32_t loadingRamPos = 0; // Position of current sample in data being loaded to PSRAM
 uint32_t nBuffersLoaded = 0; // Number of buffers transferred from USB -> microSD in safe load mode
 byte currentPlayBuffer = 0; // Current buffer for SD reads for each channel (a double buffering scheme allows one to be filled while the other is read)
 byte PowerState = 0;
@@ -235,14 +239,33 @@ void setup() {
   #endif
 }
 
+void handler() {
+  if (safeLoadingToSD) {
+    if (StateMachineCOM.available() > 0) {
+      opCode = StateMachineCOM.readByte();
+      opSource = 1;
+      switch(opCode) {
+        case 'P':
+          startPlayback();
+        break;
+        case 'X':
+          stopPlayback();
+        break;
+      }
+    }
+  }
+}
+
 void loop() {
   opCode = 0;
-  if ((USBCOM.available() > 0) && !safeLoadingToSD) {
-      opCode = USBCOM.readByte();
-      opSource = 0;
-  } else if (StateMachineCOM.available() > 0) {
-    opCode = StateMachineCOM.readByte();
-    opSource = 1;
+  if (!safeLoadingToSD) {
+    if (USBCOM.available() > 0) {
+        opCode = USBCOM.readByte();
+        opSource = 0;
+    } else if (StateMachineCOM.available() > 0) {
+      opCode = StateMachineCOM.readByte();
+      opSource = 1;
+    }
   }
   if (opCode > 0) {
     switch (opCode) {
@@ -389,9 +412,11 @@ void loop() {
             nFullReads = (unsigned long)(floor((double)nWaveformBytes[loadIndex][loadSlot] / (double)SAFE_TRANSFER_BUFFER_SIZE));
             partialReadSize = nWaveformBytes[loadIndex][loadSlot] - (nFullReads*SAFE_TRANSFER_BUFFER_SIZE);
             nTotalReads = nFullReads + (partialReadSize > 0);
+            loadingRamPos = waveformStartPosRAM[loadIndex]*4;
             loadingFilePos = waveformStartPosSD[loadIndex][loadSlot] * 4;
             nBuffersLoaded = 0;
             safeLoadingToSD = true;
+            hardwareTimer.begin(handler, 50);
           }
         }
       break;
@@ -407,45 +432,10 @@ void loop() {
         }
       break;
       case 'P':
-        switch (opSource) {
-          case 0:
-            waveIndex = USBCOM.readByte();
-            break;
-          case 1:
-            waveIndex = StateMachineCOM.readByte();
-            break;
-        }
-        if (opSource == 1) {
-          StateMachineCOM.writeByte(1);
-        }
-        currentPlaySlot = playSlot[waveIndex];
-        currentPlaybackPos = waveformStartPosSD[waveIndex][currentPlaySlot];
-        ramBufferPlaybackPos = waveformStartPosRAM[waveIndex];
-        currentPlayBuffer = 1;
-        bufferPlaybackPos = 0;
-        playbackTime = 0;
-        playbackFilePos = currentPlaybackPos * 4; // Sound start position on microSD card in bytes
-        sdLoadFlag = true;
-        playingFromRamBuffer = true;
-        isActiveInterrupt = true;
-        currentLoopMode = loopMode[waveIndex];
-        if (useAMEnvelope) {
-          inEnvelope = true;
-          envelopeDir = 0;
-          envelopePos = 0;
-        }
-        syncPinStartFlag = true;
-        syncPinStartTimer = 0;
-        isPlaying = true;
+        startPlayback();
       break;
       case 'X':
-        if (useAMEnvelope) {
-          inEnvelope = true;
-          envelopeDir = 1;
-          envelopePos = 0;
-        } else {
-          isPlaying = false;
-        }
+        stopPlayback();
       break;
     }
   }
@@ -470,12 +460,13 @@ void loop() {
         thisReadTransferSize = SAFE_TRANSFER_BUFFER_SIZE;
       }
       while (USBCOM.available() == 0) {}
-      if (nBuffersLoaded == 0) {
+      if (nBuffersLoaded < SAFE_BUFFERS_PER_FILEBUFFER) {
         if (playSlot[loadIndex] == 0) {
-          USBCOM.readByteArray(AudioDataSideB.byteArray + (waveformStartPosRAM[loadIndex]*4), thisReadTransferSize);
+          USBCOM.readByteArray(AudioDataSideB.byteArray + loadingRamPos, thisReadTransferSize);
         } else {
-          USBCOM.readByteArray(AudioDataSideA.byteArray + (waveformStartPosRAM[loadIndex]*4), thisReadTransferSize);
+          USBCOM.readByteArray(AudioDataSideA.byteArray + loadingRamPos, thisReadTransferSize);
         }
+        loadingRamPos += thisReadTransferSize;
       } else {
         while (sdBusy()) {}   
         Wave0.seek(loadingFilePos);
@@ -490,6 +481,7 @@ void loop() {
         safeLoadingToSD = false;
         newWaveLoaded[loadIndex] = true;
         USBCOM.writeByte(1); Serial.send_now();
+        hardwareTimer.end();
       }
     }  
   }
@@ -803,6 +795,49 @@ void setAmpGain(byte taperLevel) {
     taperLevel = 63;
   }
   i2c_write(TPA6130A2_ADDRESS, TPA6130A2_REG2, taperLevel);
+}
+
+void startPlayback() {
+  switch (opSource) {
+    case 0:
+        waveIndex = USBCOM.readByte();
+        break;
+      case 1:
+        waveIndex = StateMachineCOM.readByte();
+        break;
+    }
+    if (opSource == 1) {
+      StateMachineCOM.writeByte(1);
+    }
+    currentPlaySlot = playSlot[waveIndex];
+    currentPlaybackPos = waveformStartPosSD[waveIndex][currentPlaySlot];
+    ramBufferPlaybackPos = waveformStartPosRAM[waveIndex];
+    currentPlayBuffer = 1;
+    bufferPlaybackPos = 0;
+    playbackTime = 0;
+    playbackFilePos = currentPlaybackPos * 4; // Sound start position on microSD card in bytes
+    sdLoadFlag = true;
+    playingFromRamBuffer = true;
+    isActiveInterrupt = true;
+    currentLoopMode = loopMode[waveIndex];
+    if (useAMEnvelope) {
+      inEnvelope = true;
+      envelopeDir = 0;
+      envelopePos = 0;
+    }
+    syncPinStartFlag = true;
+    syncPinStartTimer = 0;
+    isPlaying = true;
+}
+
+void stopPlayback() {
+  if (useAMEnvelope) {
+    inEnvelope = true;
+    envelopeDir = 1;
+    envelopePos = 0;
+  } else {
+    isPlaying = false;
+  }
 }
 
 void setup_PCM5122_I2SSlave() {
