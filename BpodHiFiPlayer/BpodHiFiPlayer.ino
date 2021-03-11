@@ -29,8 +29,8 @@
 #include "SdFat.h"
 //-------------------USER MACROS-------------------
 // Uncomment one line below to specify target hardware
- #define DAC2_PRO
-// #define DAC2_HD
+// #define DAC2_PRO
+ #define DAC2_HD
 //-------------------------------------------------
 #define FirmwareVersion 1
 #define RESET_PIN 33
@@ -116,7 +116,7 @@ uint32_t nWaveformBytes[MAX_WAVEFORMS][2] = {0}; //Number of bytes in each wavef
 uint32_t waveformStartPosSD[MAX_WAVEFORMS][2] = {0};
 uint32_t waveformEndPosSD[MAX_WAVEFORMS][2] = {0};
 uint32_t waveformStartPosRAM[MAX_WAVEFORMS] = {0};
-
+byte digitalAttenuation = 1; // Bytes, 0 = full volume, zero point depends on DAC
 uint32_t currentPlaybackPos = 0;
 uint32_t bufferPosL = 0;
 uint32_t bufferPosR = 0;
@@ -139,6 +139,7 @@ boolean syncPinStartFlag = false; // True if a trigger has been received to star
 boolean syncPinEndFlag = false;
 uint32_t syncPinStartTimer = 0;
 uint32_t syncPinEndTimer = 0;
+byte wave2Stop = 0;
 
 // Synth
 boolean generateSynth = false;
@@ -284,18 +285,22 @@ void loop() {
           USBCOM.writeByte(hardwareVersion);
           USBCOM.writeByte(BIT_DEPTH);
           USBCOM.writeByte(MAX_WAVEFORMS);
+          USBCOM.writeByte(digitalAttenuation);
           USBCOM.writeUint32(samplingRate);
           USBCOM.writeUint32(MAX_SECONDS_PER_WAVEFORM);
           USBCOM.writeUint32(MAX_ENVELOPE_SIZE);
         }
       break;
       case 'E': // Use/disuse AM envelope
-        useAMEnvelope = USBCOM.readByte();
-        USBCOM.writeByte(1); // Acknowledge
-        envelopePos = 0;
-        envelopeDir = 0;
+        if (opSource == 0) {
+          useAMEnvelope = USBCOM.readByte();
+          USBCOM.writeByte(1); // Acknowledge
+          envelopePos = 0;
+          envelopeDir = 0;
+        }
       break;
       case 'M': // Load AM envelope
+        if (opSource == 0) {
           envelopeSize = USBCOM.readUint16();
           if (envelopeSize <= MAX_ENVELOPE_SIZE) {
             USBCOM.readByteArray(AMenvelope.byteArray, envelopeSize*4);
@@ -303,6 +308,7 @@ void loop() {
           } else {
             USBCOM.writeByte(0); // Acknowledge
           }
+        }
       break;
       case 'O': // Set loop mode (for each channel)
         if (opSource == 0){
@@ -317,38 +323,53 @@ void loop() {
         }
       break;
       case 'H': // Enable headphone amp
-        useHeadphoneAmp = USBCOM.readByte();
-        setAmpPower(useHeadphoneAmp);
-        USBCOM.writeByte(1); // Acknowledge
+        if (opSource == 0){
+          useHeadphoneAmp = USBCOM.readByte();
+          setAmpPower(useHeadphoneAmp);
+          USBCOM.writeByte(1); // Acknowledge
+        }
       break;
       case 'G': // Set headphone amp gain
-        headphoneAmpGain = USBCOM.readByte();
-        setAmpGain(headphoneAmpGain);
-        USBCOM.writeByte(1); // Acknowledge
+        if (opSource == 0){
+          headphoneAmpGain = USBCOM.readByte();
+          setAmpGain(headphoneAmpGain);
+          USBCOM.writeByte(1); // Acknowledge
+        }
+      break;
+      case 'A': // Set digital attenuation
+        if (opSource == 0){
+          digitalAttenuation = USBCOM.readByte();
+          setDigitalAttenuation(digitalAttenuation);
+          USBCOM.writeByte(1); // Acknowledge
+        }
       break;
       case 'S': // Set sampling rate
-        samplingRate = USBCOM.readUint32();
-        #ifdef DAC2_HD
-          set_PCM1796_SF();
-        #else
-          setup_PCM5122_I2SMaster();
-        #endif
-        setStartSamplePositions();
-        synthTimeStep = twoPi/((double)samplingRate/synthFreq);
-        USBCOM.writeByte(1); // Acknowledge
+        if (opSource == 0) {
+          samplingRate = USBCOM.readUint32();
+          #ifdef DAC2_HD
+            set_PCM1796_SF();
+          #else
+            setup_PCM5122_I2SMaster();
+          #endif
+          setStartSamplePositions();
+          synthTimeStep = twoPi/((double)samplingRate/synthFreq);
+          USBCOM.writeByte(1); // Acknowledge
+        }
       break;
       case 'N': // Set synth amplitude
-        synthAmplitudeBits = USBCOM.readUint16();
-        synthHalfAmplitudeBits = synthAmplitudeBits/2;
-        if (synthAmplitudeBits > 0) {
-          if (!generateSynth) {
-            synthTime = 0;
+        if (opSource == 0) {
+          synthAmplitudeBits = USBCOM.readUint16();
+          synthHalfAmplitudeBits = synthAmplitudeBits/2;
+          if (synthAmplitudeBits > 0) {
+            if (!generateSynth) {
+              synthTime = 0;
+            }
+            generateSynth = true;
+          } else {
+            generateSynth = false;
           }
-          generateSynth = true;
-        } else {
-          generateSynth = false;
+          USBCOM.writeByte(1); // Acknowledge
         }
-        USBCOM.writeByte(1); // Acknowledge
       break;
       case 'Q': // Set synth frequency
         if (opSource == 0) {
@@ -437,6 +458,16 @@ void loop() {
       case 'X':
         stopPlayback();
       break;
+      case 'x': // Stop a specific sound (for BControl compatability)
+        if (opSource == 0) {
+          wave2Stop = USBCOM.readByte();
+        } else {
+          wave2Stop = StateMachineCOM.readByte();
+        }
+        if (wave2Stop == waveIndex) {
+          stopPlayback();
+        }
+      break;  
     }
   }
   // MicroSD transfer
@@ -973,6 +1004,19 @@ void set_PCM1796_SF() {
       break;
     }
   }
+}
+
+void setDigitalAttenuation(byte attenuationFactor) {
+  #ifdef DAC2_HD
+    i2c_write(PCM1796_ADDRESS, 16, 255-attenuationFactor);
+    i2c_write(PCM1796_ADDRESS, 17, 255-attenuationFactor);
+  #else
+    if ((attenuationFactor + 48) > 255) {
+      attenuationFactor = 207;
+    }
+    i2c_write(PCM5122_ADDRESS, 61, attenuationFactor + 48);
+    i2c_write(PCM5122_ADDRESS, 62, attenuationFactor + 48);
+  #endif
 }
 
 void setStartSamplePositions() {
