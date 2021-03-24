@@ -140,6 +140,7 @@ boolean syncPinEndFlag = false;
 uint32_t syncPinStartTimer = 0;
 uint32_t syncPinEndTimer = 0;
 byte wave2Stop = 0;
+uint32_t newFreq = 0;
 
 // Synth
 boolean generateSynth = false;
@@ -365,40 +366,40 @@ void loop() {
         }
       break;
       case 'N': // Set synth amplitude
-        if (opSource == 0) {
-          synthAmplitudeBitsTarget = USBCOM.readUint16();
-          if (!generateSynth) {
-            synthTime = 0;
-          }
-          if (nSynthAmpFadeSamples == 0) {
-            synthAmplitudeBits = synthAmplitudeBitsTarget;
-            synthHalfAmplitudeBits = synthAmplitudeBits/2;
-            synthAmplitudeFloat = (double)synthAmplitudeBits;
-            generateSynth = false;
-            if (synthAmplitudeBits > 0) {
-              generateSynth = true;
-            }
-          } else {
-            fadeDirection = (synthAmplitudeBitsTarget > synthAmplitudeBits);
-            synthAmplitudeFadeStep = ((double)synthAmplitudeBitsTarget - double(synthAmplitudeBits))/(double)nSynthAmpFadeSamples;
-            synthAmplitudeFloat = (double)synthAmplitudeBits;
-            synthAmplitudeFading = true;
+        synthAmplitudeBitsTarget = readUint16FromSource(opSource);
+        if (!generateSynth) {
+          synthTime = 0;
+        }
+        if (nSynthAmpFadeSamples == 0) {
+          synthAmplitudeBits = synthAmplitudeBitsTarget;
+          synthHalfAmplitudeBits = synthAmplitudeBits/2;
+          synthAmplitudeFloat = (double)synthAmplitudeBits;
+          generateSynth = false;
+          if (synthAmplitudeBits > 0) {
             generateSynth = true;
           }
+        } else {
+          fadeDirection = (synthAmplitudeBitsTarget > synthAmplitudeBits);
+          synthAmplitudeFadeStep = ((double)synthAmplitudeBitsTarget - double(synthAmplitudeBits))/(double)nSynthAmpFadeSamples;
+          synthAmplitudeFloat = (double)synthAmplitudeBits;
+          synthAmplitudeFading = true;
+          generateSynth = true;
+        }
+        if (opSource == 0) {
           USBCOM.writeByte(1); // Acknowledge
         }
       break;
       case 'F': // Set synth frequency
+        newFreq = readUint32FromSource(opSource);  
+        synthFreq = ((double)newFreq)/1000; 
+        synthTimeStep = twoPi/((double)samplingRate/synthFreq);
         if (opSource == 0) {
-          uint32_t newFreq = USBCOM.readUint32();  
-          synthFreq = ((double)newFreq)/1000; 
-          synthTimeStep = twoPi/((double)samplingRate/synthFreq);
           USBCOM.writeByte(1); // Acknowledge
         }
       break;
       case 'W': // Set synth waveform
+        synthWaveform = readByteFromSource(opSource);
         if (opSource == 0) {
-          synthWaveform = USBCOM.readByte();
           USBCOM.writeByte(1); // Acknowledge
         }
       break;
@@ -1076,6 +1077,38 @@ void i2c_write(byte i2cAddress, byte address, byte val) {
   Wire.write(address);
   Wire.write(val);
   Wire.endTransmission();
+}
+
+byte readByteFromSource(byte opSource) {
+  switch (opSource) {
+    case 0:
+      return USBCOM.readByte();
+    break;
+    case 1:
+      return StateMachineCOM.readByte();
+    break;
+  }
+}
+uint16_t readUint16FromSource(byte opSource) {
+  switch (opSource) {
+    case 0:
+      return USBCOM.readUint16();
+    break;
+    case 1:
+      return StateMachineCOM.readUint16();
+    break;
+  }
+}
+
+uint32_t readUint32FromSource(byte opSource) {
+  switch (opSource) {
+    case 0:
+      return USBCOM.readUint32();
+    break;
+    case 1:
+      return StateMachineCOM.readUint32();
+    break;
+  }
 }
 
 void returnModuleInfo() {
