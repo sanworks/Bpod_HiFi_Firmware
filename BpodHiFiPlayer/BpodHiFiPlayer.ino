@@ -41,7 +41,7 @@
 #define MAX_ENVELOPE_SIZE 2000 // Maximum size of AM onset/offset envelope (in samples)
 #define SYNC_PIN 30 // GPIO pin controlling SYNC BNC output
 #define SYNC_PIN_DELAY_ONSET 22 // Number of DMA ISR calls before sync line goes high after sound onset
-#define SYNC_PIN_DELAY_OFFSET 27 // Number of DMA ISR calls before sync line goes low after sound end
+#define SYNC_PIN_DELAY_OFFSET 28 // Number of DMA ISR calls before sync line goes low after sound end
 #define FILE_TRANSFER_BUFFER_SIZE 128000
 #define SAFE_TRANSFER_BUFFER_SIZE 128000 // Must be a factor of FILE_TRANSFER_BUFFER_SIZE
 
@@ -202,6 +202,7 @@ union {
 uint32_t bufferPlaybackPos = 0;
 
 void setup() {
+  Serial.setTimeout(5000);
   pinMode(SYNC_PIN, OUTPUT);
   pinMode(RESET_PIN, OUTPUT);
   digitalWrite(SYNC_PIN, LOW);
@@ -867,7 +868,7 @@ void stopPlayback() {
     envelopeDir = 1;
     envelopePos = 0;
   } else {
-    isPlaying = false;
+    schedulePlaybackStop = true;
   }
 }
 
