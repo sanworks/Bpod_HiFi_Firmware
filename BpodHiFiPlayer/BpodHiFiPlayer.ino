@@ -143,13 +143,20 @@ byte wave2Stop = 0;
 
 // Synth
 boolean generateSynth = false;
-uint32_t synthAmplitudeBits = 1000; // Peak to peak amplitude of background white noise in bits
-uint32_t synthHalfAmplitudeBits = 500;
+boolean runSynthCycle = true;
+uint16_t synthAmplitudeBits = 0; // Peak to peak amplitude of background white noise in bits
+uint16_t synthHalfAmplitudeBits = 0;
+double synthAmplitudeFloat = 0;
+uint16_t synthAmplitudeBitsTarget = 0;
 int16_t synthSampleL = 0;
 int16_t synthSampleR = 0;
 double synthTime = 0;
 double synthTimeStep = 0;
 double synthFreq = 1000;
+boolean synthAmplitudeFading = false;
+double synthAmplitudeFadeStep = 0;
+uint32_t nSynthAmpFadeSamples = 0;
+byte fadeDirection = 0;
 const double twoPi = 6.28318530717958;
 
 byte synthWaveform = 0; // 0 = White Noise 1 = Sine
@@ -359,20 +366,29 @@ void loop() {
       break;
       case 'N': // Set synth amplitude
         if (opSource == 0) {
-          synthAmplitudeBits = USBCOM.readUint16();
-          synthHalfAmplitudeBits = synthAmplitudeBits/2;
-          if (synthAmplitudeBits > 0) {
-            if (!generateSynth) {
-              synthTime = 0;
-            }
-            generateSynth = true;
-          } else {
+          synthAmplitudeBitsTarget = USBCOM.readUint16();
+          if (!generateSynth) {
+            synthTime = 0;
+          }
+          if (nSynthAmpFadeSamples == 0) {
+            synthAmplitudeBits = synthAmplitudeBitsTarget;
+            synthHalfAmplitudeBits = synthAmplitudeBits/2;
+            synthAmplitudeFloat = (double)synthAmplitudeBits;
             generateSynth = false;
+            if (synthAmplitudeBits > 0) {
+              generateSynth = true;
+            }
+          } else {
+            fadeDirection = (synthAmplitudeBitsTarget > synthAmplitudeBits);
+            synthAmplitudeFadeStep = ((double)synthAmplitudeBitsTarget - double(synthAmplitudeBits))/(double)nSynthAmpFadeSamples;
+            synthAmplitudeFloat = (double)synthAmplitudeBits;
+            synthAmplitudeFading = true;
+            generateSynth = true;
           }
           USBCOM.writeByte(1); // Acknowledge
         }
       break;
-      case 'Q': // Set synth frequency
+      case 'F': // Set synth frequency
         if (opSource == 0) {
           uint32_t newFreq = USBCOM.readUint32();  
           synthFreq = ((double)newFreq)/1000; 
@@ -383,6 +399,12 @@ void loop() {
       case 'W': // Set synth waveform
         if (opSource == 0) {
           synthWaveform = USBCOM.readByte();
+          USBCOM.writeByte(1); // Acknowledge
+        }
+      break;
+      case 'Z': // Set amplitude fade nSamples
+        if (opSource == 0) {
+          nSynthAmpFadeSamples = USBCOM.readUint32();
           USBCOM.writeByte(1); // Acknowledge
         }
       break;
@@ -764,19 +786,38 @@ void CodecDAC_isr(void)
       }
     } else {
       if (generateSynth) {
-        switch (synthWaveform) {
-          case 0: // White Noise
-            synthSampleL = (rand() % synthAmplitudeBits) - synthHalfAmplitudeBits;
-            synthSampleR = (rand() % synthAmplitudeBits) - synthHalfAmplitudeBits;
-          break;
-          case 1: // Sine
-            synthSampleL = round(sin(synthTime)*synthAmplitudeBits);
-            synthSampleR = synthSampleL;
-            synthTime += synthTimeStep;            
-          break;
+        runSynthCycle = true;
+        if (synthAmplitudeFading) {
+          synthAmplitudeFloat += synthAmplitudeFadeStep;
+          synthAmplitudeBits = (uint16_t)synthAmplitudeFloat;
+          synthHalfAmplitudeBits = synthAmplitudeBits/2;
+          if (((fadeDirection == 1) && (synthAmplitudeBits >= synthAmplitudeBitsTarget)) || ((fadeDirection == 0) && (synthAmplitudeBits <= synthAmplitudeBitsTarget))) {
+            synthAmplitudeBits = synthAmplitudeBitsTarget;
+            synthAmplitudeFloat = (double)synthAmplitudeBits;
+            synthAmplitudeFading = false;
+            if (synthAmplitudeBits == 0) {
+              generateSynth = false;
+            }
+          }
+          if (synthAmplitudeBits == 0) {
+            runSynthCycle = false;
+          }
         }
-        myi2s_tx_buffer.int16[0] = synthSampleL;
-        myi2s_tx_buffer.int16[1] = synthSampleR;
+        if (runSynthCycle) {
+          switch (synthWaveform) {
+            case 0: // White Noise
+              synthSampleL = (rand() % synthAmplitudeBits) - synthHalfAmplitudeBits;
+              synthSampleR = (rand() % synthAmplitudeBits) - synthHalfAmplitudeBits;
+            break;
+            case 1: // Sine
+              synthSampleL = round(sin(synthTime)*synthAmplitudeBits);
+              synthSampleR = synthSampleL;
+              synthTime += synthTimeStep;            
+            break;
+          }
+          myi2s_tx_buffer.int16[0] = synthSampleL;
+          myi2s_tx_buffer.int16[1] = synthSampleR;
+        }
       } else {
         myi2s_tx_buffer.int32[0] = 0;
       }
