@@ -30,7 +30,7 @@
 //-------------------USER MACROS-------------------
 // Uncomment one line below to specify target hardware
 // #define DAC2_PRO
- #define DAC2_HD
+// #define DAC2_HD
 //-------------------------------------------------
 #define FirmwareVersion 1
 #define RESET_PIN 33
@@ -169,6 +169,7 @@ boolean skipCycle = false;
 // Sound slot management
 byte playSlot[MAX_WAVEFORMS] = {0}; // 0 or 1. New waveforms are loaded into the slot not in use, and newly loaded waveforms are made current by '*' command
 boolean newWaveLoaded[MAX_WAVEFORMS] = {false}; // True if a new waveform was loaded and not yet made current with '*' command
+boolean waveLoaded[MAX_WAVEFORMS] = {false}; // True if any waveform was loaded to each slot
 byte currentPlaySlot = 0; // playSlot for currently playing sound
 byte loadSlot = 0;
 
@@ -360,7 +361,6 @@ void loop() {
           #else
             setup_PCM5122_I2SMaster();
           #endif
-          setStartSamplePositions();
           synthTimeStep = twoPi/((double)samplingRate/synthFreq);
           USBCOM.writeByte(1); // Acknowledge
         }
@@ -442,6 +442,7 @@ void loop() {
               }
             }
             newWaveLoaded[loadIndex] = true;
+            waveLoaded[loadIndex] = true;
             USBCOM.writeByte(1); Serial.send_now();
           }
         }
@@ -535,6 +536,7 @@ void loop() {
       if (nBuffersLoaded == nTotalReads) {
         safeLoadingToSD = false;
         newWaveLoaded[loadIndex] = true;
+        waveLoaded[loadIndex] = true;
         USBCOM.writeByte(1); Serial.send_now();
         hardwareTimer.end();
       }
@@ -883,25 +885,27 @@ void startPlayback() {
     if (opSource == 1) {
       StateMachineCOM.writeByte(1);
     }
-    currentPlaySlot = playSlot[waveIndex];
-    currentPlaybackPos = waveformStartPosSD[waveIndex][currentPlaySlot];
-    ramBufferPlaybackPos = waveformStartPosRAM[waveIndex];
-    currentPlayBuffer = 1;
-    bufferPlaybackPos = 0;
-    playbackTime = 0;
-    playbackFilePos = currentPlaybackPos * 4; // Sound start position on microSD card in bytes
-    sdLoadFlag = true;
-    playingFromRamBuffer = true;
-    isActiveInterrupt = true;
-    currentLoopMode = loopMode[waveIndex];
-    if (useAMEnvelope) {
-      inEnvelope = true;
-      envelopeDir = 0;
-      envelopePos = 0;
+    if (waveLoaded[waveIndex]) {
+      currentPlaySlot = playSlot[waveIndex];
+      currentPlaybackPos = waveformStartPosSD[waveIndex][currentPlaySlot];
+      ramBufferPlaybackPos = waveformStartPosRAM[waveIndex];
+      currentPlayBuffer = 1;
+      bufferPlaybackPos = 0;
+      playbackTime = 0;
+      playbackFilePos = currentPlaybackPos * 4; // Sound start position on microSD card in bytes
+      sdLoadFlag = true;
+      playingFromRamBuffer = true;
+      isActiveInterrupt = true;
+      currentLoopMode = loopMode[waveIndex];
+      if (useAMEnvelope) {
+        inEnvelope = true;
+        envelopeDir = 0;
+        envelopePos = 0;
+      }
+      syncPinStartFlag = true;
+      syncPinStartTimer = 0;
+      isPlaying = true;
     }
-    syncPinStartFlag = true;
-    syncPinStartTimer = 0;
-    isPlaying = true;
 }
 
 void stopPlayback() {
