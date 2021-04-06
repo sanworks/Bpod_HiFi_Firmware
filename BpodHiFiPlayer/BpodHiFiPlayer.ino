@@ -897,13 +897,15 @@ void startPlayback() {
       playingFromRamBuffer = true;
       isActiveInterrupt = true;
       currentLoopMode = loopMode[waveIndex];
-      if (useAMEnvelope) {
-        inEnvelope = true;
-        envelopeDir = 0;
-        envelopePos = 0;
+      if (!isPlaying) {
+        if (useAMEnvelope) {
+          inEnvelope = true;
+          envelopeDir = 0;
+          envelopePos = 0;
+        }
+        syncPinStartFlag = true;
+        syncPinStartTimer = 0;
       }
-      syncPinStartFlag = true;
-      syncPinStartTimer = 0;
       isPlaying = true;
     }
 }
