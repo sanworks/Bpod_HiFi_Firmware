@@ -30,7 +30,7 @@
 //-------------------USER MACROS-------------------
 // Uncomment one line below to specify target hardware
 // #define DAC2_PRO
-// #define DAC2_HD
+ #define DAC2_HD
 //-------------------------------------------------
 #define FirmwareVersion 1
 #define RESET_PIN 33
@@ -141,6 +141,8 @@ uint32_t syncPinStartTimer = 0;
 uint32_t syncPinEndTimer = 0;
 byte wave2Stop = 0;
 uint32_t newFreq = 0;
+byte serialReadOK = 0; // 1 on read start, set to 0 if any buffer is not fully retrieved by Serial.readBytes()
+uint32_t nSerialBytesRead = 0; // The number of bytes read by Serial.readBytes()
 
 // Synth
 boolean generateSynth = false;
@@ -211,7 +213,7 @@ union {
 uint32_t bufferPlaybackPos = 0;
 
 void setup() {
-  Serial.setTimeout(5000);
+  Serial.setTimeout(1000);
   pinMode(SYNC_PIN, OUTPUT);
   pinMode(RESET_PIN, OUTPUT);
   digitalWrite(SYNC_PIN, LOW);
@@ -411,6 +413,7 @@ void loop() {
       break;
       case 'L':
         if (opSource == 0) {
+          serialReadOK = 1;
           loadIndex = USBCOM.readByte();
           loadSlot = 1-playSlot[loadIndex];
           if (loadIndex < MAX_WAVEFORMS) { // Sanity check
@@ -428,27 +431,31 @@ void loop() {
               } else {
                 thisReadTransferSize = FILE_TRANSFER_BUFFER_SIZE;
               }
-              while (USBCOM.available() == 0) {}
+              while (Serial.available() == 0) {}
               if (i == 0) {
                 if (playSlot[loadIndex] == 0) {
-                  USBCOM.readByteArray(AudioDataSideB.byteArray + (waveformStartPosRAM[loadIndex]*4), thisReadTransferSize);
+                  nSerialBytesRead = Serial.readBytes(AudioDataSideB.byteArray + (waveformStartPosRAM[loadIndex]*4), thisReadTransferSize);
                 } else {
-                  USBCOM.readByteArray(AudioDataSideA.byteArray + (waveformStartPosRAM[loadIndex]*4), thisReadTransferSize);
+                  nSerialBytesRead = Serial.readBytes(AudioDataSideA.byteArray + (waveformStartPosRAM[loadIndex]*4), thisReadTransferSize);
                 }
               } else {
-                USBCOM.readByteArray((char*)fileTransferBuffer, thisReadTransferSize);
+                nSerialBytesRead = Serial.readBytes(fileTransferBuffer, thisReadTransferSize);
                 Wave0.write(fileTransferBuffer, thisReadTransferSize);
                 while (sdBusy()) {}
+              }
+              if (nSerialBytesRead != thisReadTransferSize) {
+                serialReadOK = 0;
               }
             }
             newWaveLoaded[loadIndex] = true;
             waveLoaded[loadIndex] = true;
-            USBCOM.writeByte(1); Serial.send_now();
+            Serial.write(serialReadOK); Serial.send_now();
           }
         }
       break;
       case '>':
         if (opSource == 0) {
+          serialReadOK = 1;
           loadIndex = USBCOM.readByte();
           loadSlot = 1-playSlot[loadIndex];
           if (loadIndex < MAX_WAVEFORMS) {
@@ -515,29 +522,32 @@ void loop() {
       } else {
         thisReadTransferSize = SAFE_TRANSFER_BUFFER_SIZE;
       }
-      while (USBCOM.available() == 0) {}
+      while (Serial.available() == 0) {}
       if (nBuffersLoaded < SAFE_BUFFERS_PER_FILEBUFFER) {
         if (playSlot[loadIndex] == 0) {
-          USBCOM.readByteArray(AudioDataSideB.byteArray + loadingRamPos, thisReadTransferSize);
+          nSerialBytesRead = Serial.readBytes(AudioDataSideB.byteArray + loadingRamPos, thisReadTransferSize);
         } else {
-          USBCOM.readByteArray(AudioDataSideA.byteArray + loadingRamPos, thisReadTransferSize);
+          nSerialBytesRead = Serial.readBytes(AudioDataSideA.byteArray + loadingRamPos, thisReadTransferSize);
         }
         loadingRamPos += thisReadTransferSize;
       } else {
         while (sdBusy()) {}   
         Wave0.seek(loadingFilePos);
         while (sdBusy()) {}   
-        USBCOM.readByteArray((char*)fileTransferBuffer, thisReadTransferSize);
+        nSerialBytesRead = Serial.readBytes((char*)fileTransferBuffer, thisReadTransferSize);
         Wave0.write(fileTransferBuffer, thisReadTransferSize);
         while (sdBusy()) {}
         loadingFilePos += thisReadTransferSize;
+      }
+      if (nSerialBytesRead != thisReadTransferSize) {
+        serialReadOK = 0;
       }
       nBuffersLoaded++;
       if (nBuffersLoaded == nTotalReads) {
         safeLoadingToSD = false;
         newWaveLoaded[loadIndex] = true;
         waveLoaded[loadIndex] = true;
-        USBCOM.writeByte(1); Serial.send_now();
+        Serial.write(serialReadOK); Serial.send_now();
         hardwareTimer.end();
       }
     }  
