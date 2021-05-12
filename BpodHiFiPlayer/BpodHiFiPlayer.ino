@@ -467,6 +467,7 @@ void loop() {
             loadingFilePos = waveformStartPosSD[loadIndex][loadSlot] * 4;
             nBuffersLoaded = 0;
             safeLoadingToSD = true;
+            Serial.setTimeout(200);
           }
         }
       break;
@@ -552,6 +553,7 @@ void loop() {
         newWaveLoaded[loadIndex] = true;
         waveLoaded[loadIndex] = true;
         Serial.write(serialReadOK); Serial.send_now();
+        Serial.setTimeout(1000);
       }
       hardwareTimer.end();
     }  
