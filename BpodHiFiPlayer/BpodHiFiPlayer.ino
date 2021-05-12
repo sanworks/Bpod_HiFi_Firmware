@@ -456,7 +456,7 @@ void loop() {
       case '>':
         if (opSource == 0) {
           serialReadOK = 1;
-          loadIndex = USBCOM.readByte();
+          loadIndex = Serial.read();
           loadSlot = 1-playSlot[loadIndex];
           if (loadIndex < MAX_WAVEFORMS) {
             nSamples[loadIndex][loadSlot] = USBCOM.readUint32();
@@ -525,16 +525,16 @@ void loop() {
       while (Serial.available() == 0) {}
       if (nBuffersLoaded < SAFE_BUFFERS_PER_FILEBUFFER) {
         if (playSlot[loadIndex] == 0) {
-          nSerialBytesRead = Serial.readBytes(AudioDataSideB.byteArray + loadingRamPos, thisReadTransferSize);
+          nSerialBytesRead = USBCOM.readBytes(AudioDataSideB.byteArray + loadingRamPos, thisReadTransferSize); // USBCOM's readBytes method must be used to prevent audio interference
         } else {
-          nSerialBytesRead = Serial.readBytes(AudioDataSideA.byteArray + loadingRamPos, thisReadTransferSize);
+          nSerialBytesRead = USBCOM.readBytes(AudioDataSideA.byteArray + loadingRamPos, thisReadTransferSize);
         }
         loadingRamPos += thisReadTransferSize;
       } else {
         while (sdBusy()) {}   
         Wave0.seek(loadingFilePos);
         while (sdBusy()) {}   
-        nSerialBytesRead = Serial.readBytes((char*)fileTransferBuffer, thisReadTransferSize);
+        nSerialBytesRead = Serial.readBytes(fileTransferBuffer, thisReadTransferSize); // Serial.readBytes can be used for microSD loading (but see above for PSRAM)
         Wave0.write(fileTransferBuffer, thisReadTransferSize);
         while (sdBusy()) {}
         loadingFilePos += thisReadTransferSize;

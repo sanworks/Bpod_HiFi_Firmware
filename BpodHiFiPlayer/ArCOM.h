@@ -49,6 +49,7 @@ public:
   byte readUint8();
   char readChar();
   void readByteArray(byte numArray[], unsigned int size);
+  uint32_t readBytes(byte numArray[], unsigned int size);
   void readUint8Array(byte numArray[], unsigned int size);
   void readCharArray(char charArray[], unsigned int size);
   uint16_t readUint16();

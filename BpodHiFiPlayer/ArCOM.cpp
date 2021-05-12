@@ -164,6 +164,10 @@ void ArCOM::writeInt32Array(long numArray[], unsigned int nValues) {
 void ArCOM::readByteArray(byte numArray[], unsigned int nValues) {
   ArCOMstream->readBytes(numArray, nValues);
 }
+uint32_t ArCOM::readBytes(byte numArray[], unsigned int nValues) {
+  uint32_t bytesRead = ArCOMstream->readBytes(numArray, nValues);
+  return bytesRead;
+}
 void ArCOM::readUint8Array(byte numArray[], unsigned int nValues) {
   ArCOMstream->readBytes(numArray, nValues);
 }
