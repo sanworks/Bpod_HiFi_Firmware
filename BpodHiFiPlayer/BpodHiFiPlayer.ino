@@ -40,8 +40,8 @@
 #define MAX_SECONDS_PER_WAVEFORM 20 // Maximum number of seconds per waveform
 #define MAX_ENVELOPE_SIZE 2000 // Maximum size of AM onset/offset envelope (in samples)
 #define SYNC_PIN 30 // GPIO pin controlling SYNC BNC output
-#define SYNC_PIN_DELAY_ONSET 22 // Number of DMA ISR calls before sync line goes high after sound onset
-#define SYNC_PIN_DELAY_OFFSET 28 // Number of DMA ISR calls before sync line goes low after sound end
+#define SYNC_PIN_DELAY_ONSET 36 // Number of DMA ISR calls before sync line goes high after sound onset
+#define SYNC_PIN_DELAY_OFFSET 42 // Number of DMA ISR calls before sync line goes low after sound end
 #define FILE_TRANSFER_BUFFER_SIZE 128000
 #define SAFE_TRANSFER_BUFFER_SIZE 128000 // Must be a factor of FILE_TRANSFER_BUFFER_SIZE
 
@@ -253,18 +253,16 @@ void setup() {
 }
 
 void handler() {
-  if (safeLoadingToSD) {
-    if (StateMachineCOM.available() > 0) {
-      opCode = StateMachineCOM.readByte();
-      opSource = 1;
-      switch(opCode) {
-        case 'P':
-          startPlayback();
-        break;
-        case 'X':
-          stopPlayback();
-        break;
-      }
+  if (StateMachineCOM.available() > 0) {
+    opCode = StateMachineCOM.readByte();
+    opSource = 1;
+    switch(opCode) {
+      case 'P':
+        startPlayback();
+      break;
+      case 'X':
+        stopPlayback();
+      break;
     }
   }
 }
@@ -469,7 +467,6 @@ void loop() {
             loadingFilePos = waveformStartPosSD[loadIndex][loadSlot] * 4;
             nBuffersLoaded = 0;
             safeLoadingToSD = true;
-            hardwareTimer.begin(handler, 50);
           }
         }
       break;
@@ -504,6 +501,7 @@ void loop() {
   }
   // MicroSD transfer
   if (isPlaying && sdLoadFlag) {
+    hardwareTimer.begin(handler, 50);
     sdLoadFlag = false;
     while (sdBusy()) {}  
     Wave0.seek(playbackFilePos);
@@ -515,8 +513,10 @@ void loop() {
     }
     while (sdBusy()) {}   
     playbackFilePos += FILE_TRANSFER_BUFFER_SIZE;
+    hardwareTimer.end();
   } else if (safeLoadingToSD) {
     if (nBuffersLoaded < nTotalReads) {
+      hardwareTimer.begin(handler, 50);
       if ((nBuffersLoaded == nTotalReads - 1) && (partialReadSize > 0)) {
         thisReadTransferSize = partialReadSize;
       } else {
@@ -531,12 +531,16 @@ void loop() {
         }
         loadingRamPos += thisReadTransferSize;
       } else {
-        while (sdBusy()) {}   
-        Wave0.seek(loadingFilePos);
-        while (sdBusy()) {}   
+        if (serialReadOK) {
+          while (sdBusy()) {}   
+          Wave0.seek(loadingFilePos);
+          while (sdBusy()) {}   
+        } 
         nSerialBytesRead = Serial.readBytes(fileTransferBuffer, thisReadTransferSize); // Serial.readBytes can be used for microSD loading (but see above for PSRAM)
-        Wave0.write(fileTransferBuffer, thisReadTransferSize);
-        while (sdBusy()) {}
+        if (serialReadOK) {
+          Wave0.write(fileTransferBuffer, thisReadTransferSize);
+          while (sdBusy()) {}
+        }
         loadingFilePos += thisReadTransferSize;
       }
       if (nSerialBytesRead != thisReadTransferSize) {
@@ -548,8 +552,8 @@ void loop() {
         newWaveLoaded[loadIndex] = true;
         waveLoaded[loadIndex] = true;
         Serial.write(serialReadOK); Serial.send_now();
-        hardwareTimer.end();
       }
+      hardwareTimer.end();
     }  
   }
 }
