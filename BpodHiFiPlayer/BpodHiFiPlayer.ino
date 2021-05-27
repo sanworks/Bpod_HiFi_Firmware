@@ -30,26 +30,27 @@
 //-------------------USER MACROS-------------------
 // Uncomment one line below to specify target hardware
 // #define DAC2_PRO
- #define DAC2_HD
+// #define DAC2_HD
 //-------------------------------------------------
 #define FirmwareVersion 1
 #define RESET_PIN 33
 #define BIT_DEPTH 16 // Bits per sample
 #define MAX_SAMPLING_RATE 192000 // Hz
 #define MAX_WAVEFORMS 20 // Number of separate audio waveforms the device can store
-#define MAX_SECONDS_PER_WAVEFORM 20 // Maximum number of seconds per waveform
+#define MAX_SECONDS_PER_WAVEFORM 30 // Maximum number of seconds per waveform
 #define MAX_ENVELOPE_SIZE 2000 // Maximum size of AM onset/offset envelope (in samples)
 #define SYNC_PIN 30 // GPIO pin controlling SYNC BNC output
 #define SYNC_PIN_DELAY_ONSET 36 // Number of DMA ISR calls before sync line goes high after sound onset
 #define SYNC_PIN_DELAY_OFFSET 42 // Number of DMA ISR calls before sync line goes low after sound end
 #define FILE_TRANSFER_BUFFER_SIZE 128000
-#define SAFE_TRANSFER_BUFFER_SIZE 128000 // Must be a factor of FILE_TRANSFER_BUFFER_SIZE
+#define RAM_ONSETBUFFER_BUFFER_SIZE 12000 // RAM per waveform allocated to the first samples of the wave
 
 #define FILE_TRANSFER_BUFFER_SIZE_SAMPLES FILE_TRANSFER_BUFFER_SIZE/4
 #define MAX_MEMORY_BYTES FILE_TRANSFER_BUFFER_SIZE*MAX_WAVEFORMS
 #define NBYTES_PER_SAMPLE BIT_DEPTH/4 // 4 = 16 bit stereo, 8 = 24 bit stereo (encoded with 32 bit ints)
 #define HALF_MEMORY_SD MAX_WAVEFORMS * NBYTES_PER_SAMPLE * MAX_SAMPLING_RATE * MAX_SECONDS_PER_WAVEFORM
-#define SAFE_BUFFERS_PER_FILEBUFFER FILE_TRANSFER_BUFFER_SIZE / SAFE_TRANSFER_BUFFER_SIZE
+#define RAM_ONSETBUFFER_SAMPLES RAM_ONSETBUFFER_BUFFER_SIZE/4
+#define RAM_ONSETBUFFER_MAXBYTES RAM_ONSETBUFFER_BUFFER_SIZE*MAX_WAVEFORMS
 
 // --- TI PCM5122 DAC macros ---
 
@@ -90,7 +91,7 @@ uint32_t playbackTime = 0; // Time (in samples) since looping channel was trigge
 char moduleName[] = "HiFi"; // Name of module for manual override UI and state machine assemble
 
 
-DMAMEM __attribute__((aligned(32))) static union {
+static union {
   int16_t int16[2];
   int32_t int32[1];
 } myi2s_tx_buffer;
@@ -188,15 +189,15 @@ union { // Floating point amplitude in range 1 (max intensity) -> 0 (silent). Da
 } AMenvelope; // Default hardware timer period during playback, in microseconds (100 = 10kHz). Set as a Union so it can be read as bytes.
 
 // AudioDataSideA and B form a double-sided buffer for playback of initial samples from PSRAM without interfering with simultaneous loading of next trial's sounds
-EXTMEM union {
-  byte byteArray[MAX_MEMORY_BYTES];
-  int16_t int16[MAX_MEMORY_BYTES / 2];
-  int32_t int32[MAX_MEMORY_BYTES / 4];
+DMAMEM union {
+  byte byteArray[RAM_ONSETBUFFER_MAXBYTES];
+  int16_t int16[RAM_ONSETBUFFER_MAXBYTES / 2];
+  int32_t int32[RAM_ONSETBUFFER_MAXBYTES / 4];
 } AudioDataSideA;
-EXTMEM union {
-  byte byteArray[MAX_MEMORY_BYTES];
-  int16_t int16[MAX_MEMORY_BYTES / 2];
-  int32_t int32[MAX_MEMORY_BYTES / 4];
+DMAMEM union {
+  byte byteArray[RAM_ONSETBUFFER_MAXBYTES];
+  int16_t int16[RAM_ONSETBUFFER_MAXBYTES / 2];
+  int32_t int32[RAM_ONSETBUFFER_MAXBYTES / 4];
 } AudioDataSideB;
 
 union {
@@ -240,11 +241,6 @@ void setup() {
   while (sdBusy()) {}
   Wave0.seek(waveformStartPosSD[waveIndex][playSlot[waveIndex]] * 4);
   
-  // Clear AudioData in PSRAM (initialized to random values)
-  for (int i = 0; i < MAX_MEMORY_BYTES / 4; i++) {
-    AudioDataSideA.int32[i] = 0;
-    AudioDataSideB.int32[i] = 0;
-  }
   #ifdef DAC2_PRO
     // Turn on LED (remove this in deployment version)
     LED_Enabled = true;
@@ -253,8 +249,8 @@ void setup() {
 }
 
 void handler() {
-  if (StateMachineCOM.available() > 0) {
-    opCode = StateMachineCOM.readByte();
+  if (Serial1.available() > 0) {
+    opCode = Serial1.read();
     opSource = 1;
     switch(opCode) {
       case 'P':
@@ -412,62 +408,21 @@ void loop() {
       case 'L':
         if (opSource == 0) {
           serialReadOK = 1;
-          loadIndex = USBCOM.readByte();
-          loadSlot = 1-playSlot[loadIndex];
-          if (loadIndex < MAX_WAVEFORMS) { // Sanity check
-            nSamples[loadIndex][loadSlot] = USBCOM.readUint32();
-            waveformEndPosSD[loadIndex][loadSlot] = (waveformStartPosSD[loadIndex][loadSlot] + nSamples[loadIndex][loadSlot]);
-            nWaveformBytes[loadIndex][loadSlot] = nSamples[loadIndex][loadSlot] * 4;
-            nFullReads = (unsigned long)(floor((double)nWaveformBytes[loadIndex][loadSlot] / (double)FILE_TRANSFER_BUFFER_SIZE));
-            partialReadSize = nWaveformBytes[loadIndex][loadSlot] - (nFullReads*FILE_TRANSFER_BUFFER_SIZE);
-            nTotalReads = nFullReads + (partialReadSize > 0);
-            Wave0.seek(waveformStartPosSD[loadIndex][loadSlot] * 4);
-            while (sdBusy()) {}            
-            for (int i = 0; i < nTotalReads; i++) {
-              if ((i == nTotalReads - 1) && (partialReadSize > 0)) {
-                thisReadTransferSize = partialReadSize;
-              } else {
-                thisReadTransferSize = FILE_TRANSFER_BUFFER_SIZE;
-              }
-              while (Serial.available() == 0) {}
-              if (i == 0) {
-                if (playSlot[loadIndex] == 0) {
-                  nSerialBytesRead = Serial.readBytes(AudioDataSideB.byteArray + (waveformStartPosRAM[loadIndex]*4), thisReadTransferSize);
-                } else {
-                  nSerialBytesRead = Serial.readBytes(AudioDataSideA.byteArray + (waveformStartPosRAM[loadIndex]*4), thisReadTransferSize);
-                }
-              } else {
-                nSerialBytesRead = Serial.readBytes(fileTransferBuffer, thisReadTransferSize);
-                Wave0.write(fileTransferBuffer, thisReadTransferSize);
-                while (sdBusy()) {}
-              }
-              if (nSerialBytesRead != thisReadTransferSize) {
-                serialReadOK = 0;
-              }
-            }
-            newWaveLoaded[loadIndex] = true;
-            waveLoaded[loadIndex] = true;
-            Serial.write(serialReadOK); Serial.send_now();
-          }
-        }
-      break;
-      case '>':
-        if (opSource == 0) {
-          serialReadOK = 1;
           loadIndex = Serial.read();
           loadSlot = 1-playSlot[loadIndex];
           if (loadIndex < MAX_WAVEFORMS) {
             nSamples[loadIndex][loadSlot] = USBCOM.readUint32();
             waveformEndPosSD[loadIndex][loadSlot] = (waveformStartPosSD[loadIndex][loadSlot] + nSamples[loadIndex][loadSlot]);
             nWaveformBytes[loadIndex][loadSlot] = nSamples[loadIndex][loadSlot] * 4;
-            nFullReads = (unsigned long)(floor((double)nWaveformBytes[loadIndex][loadSlot] / (double)SAFE_TRANSFER_BUFFER_SIZE));
-            partialReadSize = nWaveformBytes[loadIndex][loadSlot] - (nFullReads*SAFE_TRANSFER_BUFFER_SIZE);
+            nFullReads = (unsigned long)(floor((double)nWaveformBytes[loadIndex][loadSlot] / (double)FILE_TRANSFER_BUFFER_SIZE));
+            partialReadSize = nWaveformBytes[loadIndex][loadSlot] - (nFullReads*FILE_TRANSFER_BUFFER_SIZE);
             nTotalReads = nFullReads + (partialReadSize > 0);
             loadingRamPos = waveformStartPosRAM[loadIndex]*4;
             loadingFilePos = waveformStartPosSD[loadIndex][loadSlot] * 4;
             nBuffersLoaded = 0;
             safeLoadingToSD = true;
             Serial.setTimeout(200);
+            // Execution continues from the main loop below, outside the switch/case for handling op codes
           }
         }
       break;
@@ -521,29 +476,23 @@ void loop() {
       if ((nBuffersLoaded == nTotalReads - 1) && (partialReadSize > 0)) {
         thisReadTransferSize = partialReadSize;
       } else {
-        thisReadTransferSize = SAFE_TRANSFER_BUFFER_SIZE;
+        thisReadTransferSize = FILE_TRANSFER_BUFFER_SIZE;
       }
       while (Serial.available() == 0) {}
-      if (nBuffersLoaded < SAFE_BUFFERS_PER_FILEBUFFER) {
+      nSerialBytesRead = Serial.readBytes(fileTransferBuffer, thisReadTransferSize);
+      while (sdBusy()) {}
+      Wave0.seek(loadingFilePos);
+      while (sdBusy()) {}
+      Wave0.write(fileTransferBuffer, thisReadTransferSize);
+      while (sdBusy()) {}
+      if (nBuffersLoaded == 0) {
         if (playSlot[loadIndex] == 0) {
-          nSerialBytesRead = USBCOM.readBytes(AudioDataSideB.byteArray + loadingRamPos, thisReadTransferSize); // USBCOM's readBytes method must be used to prevent audio interference
+          memcpy(AudioDataSideB.byteArray + loadingRamPos, fileTransferBuffer, RAM_ONSETBUFFER_BUFFER_SIZE);
         } else {
-          nSerialBytesRead = USBCOM.readBytes(AudioDataSideA.byteArray + loadingRamPos, thisReadTransferSize);
+          memcpy(AudioDataSideA.byteArray + loadingRamPos, fileTransferBuffer, RAM_ONSETBUFFER_BUFFER_SIZE);
         }
-        loadingRamPos += thisReadTransferSize;
-      } else {
-        if (serialReadOK) {
-          while (sdBusy()) {}   
-          Wave0.seek(loadingFilePos);
-          while (sdBusy()) {}   
-        } 
-        nSerialBytesRead = Serial.readBytes(fileTransferBuffer, thisReadTransferSize); // Serial.readBytes can be used for microSD loading (but see above for PSRAM)
-        if (serialReadOK) {
-          Wave0.write(fileTransferBuffer, thisReadTransferSize);
-          while (sdBusy()) {}
-        }
-        loadingFilePos += thisReadTransferSize;
       }
+      loadingFilePos += thisReadTransferSize;   
       if (nSerialBytesRead != thisReadTransferSize) {
         serialReadOK = 0;
       }
@@ -756,10 +705,11 @@ void CodecDAC_isr(void)
       }
 
       currentPlaybackPos++;
-      if (currentPlaybackPos == (waveformStartPosSD[waveIndex][currentPlaySlot] + FILE_TRANSFER_BUFFER_SIZE_SAMPLES)) {
+      if (currentPlaybackPos == (waveformStartPosSD[waveIndex][currentPlaySlot] + RAM_ONSETBUFFER_SAMPLES)) {
         playingFromRamBuffer = false;
         currentPlayBuffer = 1-currentPlayBuffer;
         sdLoadFlag = true;
+        bufferPlaybackPos = RAM_ONSETBUFFER_SAMPLES;
       }
       if (bufferPlaybackPos == FILE_TRANSFER_BUFFER_SIZE_SAMPLES) {
         currentPlayBuffer = 1-currentPlayBuffer;
@@ -892,14 +842,15 @@ void setAmpGain(byte taperLevel) {
 void startPlayback() {
   switch (opSource) {
     case 0:
-        waveIndex = USBCOM.readByte();
-        break;
-      case 1:
-        waveIndex = StateMachineCOM.readByte();
-        break;
+      waveIndex = USBCOM.readByte();
+      break;
+    case 1:
+      while (Serial1.available() == 0) {}
+      waveIndex = Serial1.read();
+      break;
     }
     if (opSource == 1) {
-      StateMachineCOM.writeByte(1);
+      Serial1.write(1);
     }
     if (waveLoaded[waveIndex]) {
       currentPlaySlot = playSlot[waveIndex];
@@ -1086,11 +1037,11 @@ void setDigitalAttenuation(byte attenuationFactor) {
 
 void setStartSamplePositions() {
   for (int i = 0; i < MAX_WAVEFORMS; i++) {
-    waveformStartPosRAM[i] = i*FILE_TRANSFER_BUFFER_SIZE_SAMPLES;
-    waveformStartPosSD[i][0] = (i * samplingRate * MAX_SECONDS_PER_WAVEFORM);
-    waveformEndPosSD[i][0] = waveformStartPosSD[i][0] + (samplingRate * MAX_SECONDS_PER_WAVEFORM);
-    waveformStartPosSD[i][1] = (i * samplingRate * MAX_SECONDS_PER_WAVEFORM) + (HALF_MEMORY_SD/NBYTES_PER_SAMPLE);
-    waveformEndPosSD[i][1] = waveformStartPosSD[i][1] + (samplingRate * MAX_SECONDS_PER_WAVEFORM);
+    waveformStartPosRAM[i] = i*RAM_ONSETBUFFER_SAMPLES;
+    waveformStartPosSD[i][0] = (i * MAX_SAMPLING_RATE * MAX_SECONDS_PER_WAVEFORM);
+    waveformEndPosSD[i][0] = waveformStartPosSD[i][0] + (MAX_SAMPLING_RATE * MAX_SECONDS_PER_WAVEFORM);
+    waveformStartPosSD[i][1] = (i * MAX_SAMPLING_RATE * MAX_SECONDS_PER_WAVEFORM) + (HALF_MEMORY_SD/NBYTES_PER_SAMPLE);
+    waveformEndPosSD[i][1] = waveformStartPosSD[i][1] + (MAX_SAMPLING_RATE * MAX_SECONDS_PER_WAVEFORM);
   }
 }
 
