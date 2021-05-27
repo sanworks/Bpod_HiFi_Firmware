@@ -27,7 +27,7 @@
 #include <SPI.h>
 #include "ArCOM.h"
 #include "SdFat.h"
-//-------------------USER MACROS-------------------
+//-------------------DEVICE SELECTION---------------
 // Uncomment one line below to specify target hardware
 // #define DAC2_PRO
 // #define DAC2_HD
@@ -144,6 +144,7 @@ byte wave2Stop = 0;
 uint32_t newFreq = 0;
 byte serialReadOK = 0; // 1 on read start, set to 0 if any buffer is not fully retrieved by Serial.readBytes()
 uint32_t nSerialBytesRead = 0; // The number of bytes read by Serial.readBytes()
+boolean newWaveTriggered = false; // True if a new wave was triggered while the timer callback was monitoring the serial port (e.g. during SD reads)
 
 // Synth
 boolean generateSynth = false;
@@ -253,11 +254,22 @@ void handler() {
     opCode = Serial1.read();
     opSource = 1;
     switch(opCode) {
-      case 'P':
+      case 'P': // Play a new sound
+        newWaveTriggered = true;
         startPlayback();
       break;
-      case 'X':
+      case 'X': // Stop playback
         stopPlayback();
+      break;
+      case 'x': // Stop specific sound (for BControl compatability)
+        while (Serial1.available() == 0) {}
+        wave2Stop = Serial1.read();
+        if (wave2Stop == waveIndex) {
+          stopPlayback();
+        }
+      break;
+      case '*': // If a 'push' command arrived during data transfer, cue PC to resend data
+        serialReadOK = 0;
       break;
     }
   }
@@ -269,8 +281,8 @@ void loop() {
     if (USBCOM.available() > 0) {
         opCode = USBCOM.readByte();
         opSource = 0;
-    } else if (StateMachineCOM.available() > 0) {
-      opCode = StateMachineCOM.readByte();
+    } else if (Serial1.available() > 0) {
+      opCode = Serial1.read();
       opSource = 1;
     }
   }
@@ -447,7 +459,7 @@ void loop() {
         if (opSource == 0) {
           wave2Stop = USBCOM.readByte();
         } else {
-          wave2Stop = StateMachineCOM.readByte();
+          wave2Stop = Serial1.read();
         }
         if (wave2Stop == waveIndex) {
           stopPlayback();
@@ -467,8 +479,11 @@ void loop() {
     } else {
       Wave0.read(BufferB.byteArray, FILE_TRANSFER_BUFFER_SIZE);
     }
-    while (sdBusy()) {}   
-    playbackFilePos += FILE_TRANSFER_BUFFER_SIZE;
+    while (sdBusy()) {}
+    if (!newWaveTriggered) { // If a new sound was not triggered during the SD read  
+      playbackFilePos += FILE_TRANSFER_BUFFER_SIZE;
+    }
+    newWaveTriggered = false;
     hardwareTimer.end();
   } else if (safeLoadingToSD) {
     if (nBuffersLoaded < nTotalReads) {
