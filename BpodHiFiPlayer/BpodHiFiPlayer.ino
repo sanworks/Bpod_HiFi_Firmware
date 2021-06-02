@@ -145,6 +145,7 @@ uint32_t newFreq = 0;
 byte serialReadOK = 0; // 1 on read start, set to 0 if any buffer is not fully retrieved by Serial.readBytes()
 uint32_t nSerialBytesRead = 0; // The number of bytes read by Serial.readBytes()
 boolean newWaveTriggered = false; // True if a new wave was triggered while the timer callback was monitoring the serial port (e.g. during SD reads)
+boolean isStereo = false; // True if the waveform currently being loaded to the device is stereo
 
 // Synth
 boolean generateSynth = false;
@@ -420,7 +421,9 @@ void loop() {
       case 'L':
         if (opSource == 0) {
           serialReadOK = 1;
-          loadIndex = Serial.read();
+          Serial.readBytes(fileTransferBuffer, 2);
+          loadIndex = fileTransferBuffer[0];
+          isStereo = fileTransferBuffer[1];
           loadSlot = 1-playSlot[loadIndex];
           if (loadIndex < MAX_WAVEFORMS) {
             nSamples[loadIndex][loadSlot] = USBCOM.readUint32();
