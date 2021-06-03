@@ -145,7 +145,13 @@ uint32_t newFreq = 0;
 byte serialReadOK = 0; // 1 on read start, set to 0 if any buffer is not fully retrieved by Serial.readBytes()
 uint32_t nSerialBytesRead = 0; // The number of bytes read by Serial.readBytes()
 boolean newWaveTriggered = false; // True if a new wave was triggered while the timer callback was monitoring the serial port (e.g. during SD reads)
-boolean isStereo = false; // True if the waveform currently being loaded to the device is stereo
+byte loadingBytesPerSample = 0; // bytes per sample for sound currently loading (2 if mono, 4 if stereo)
+uint32_t nRamBufferSamples = 0;
+uint32_t nFileTransferSamples = 0;
+
+// Stereo
+boolean isStereo[MAX_WAVEFORMS][2] = {false}; // True if the waveform is stereo
+boolean playbackIsStereo = false; // True if current sound playing is stereo
 
 // Synth
 boolean generateSynth = false;
@@ -423,12 +429,16 @@ void loop() {
           serialReadOK = 1;
           Serial.readBytes(fileTransferBuffer, 2);
           loadIndex = fileTransferBuffer[0];
-          isStereo = fileTransferBuffer[1];
           loadSlot = 1-playSlot[loadIndex];
+          isStereo[loadIndex][loadSlot] = fileTransferBuffer[1];
+          loadingBytesPerSample = 2; // Assume mono
+          if (isStereo[loadIndex][loadSlot]) {
+            loadingBytesPerSample = 4;
+          }
           if (loadIndex < MAX_WAVEFORMS) {
             nSamples[loadIndex][loadSlot] = USBCOM.readUint32();
             waveformEndPosSD[loadIndex][loadSlot] = (waveformStartPosSD[loadIndex][loadSlot] + nSamples[loadIndex][loadSlot]);
-            nWaveformBytes[loadIndex][loadSlot] = nSamples[loadIndex][loadSlot] * 4;
+            nWaveformBytes[loadIndex][loadSlot] = nSamples[loadIndex][loadSlot] * loadingBytesPerSample;
             nFullReads = (unsigned long)(floor((double)nWaveformBytes[loadIndex][loadSlot] / (double)FILE_TRANSFER_BUFFER_SIZE));
             partialReadSize = nWaveformBytes[loadIndex][loadSlot] - (nFullReads*FILE_TRANSFER_BUFFER_SIZE);
             nTotalReads = nFullReads + (partialReadSize > 0);
@@ -672,20 +682,40 @@ void CodecDAC_isr(void)
       if (inEnvelope) {
           if (playingFromRamBuffer) {
             if (currentPlaySlot == 0) {
-              myi2s_tx_buffer.int16[0] = AudioDataSideA.int16[ramBufferPlaybackPos*2];
-              myi2s_tx_buffer.int16[1] = AudioDataSideA.int16[(ramBufferPlaybackPos*2)+1];
+              if (playbackIsStereo) {
+                myi2s_tx_buffer.int16[0] = AudioDataSideA.int16[ramBufferPlaybackPos*2];
+                myi2s_tx_buffer.int16[1] = AudioDataSideA.int16[(ramBufferPlaybackPos*2)+1];
+              } else {
+                myi2s_tx_buffer.int16[0] = AudioDataSideA.int16[ramBufferPlaybackPos];
+                myi2s_tx_buffer.int16[1] = AudioDataSideA.int16[ramBufferPlaybackPos];
+              }
             } else {
-              myi2s_tx_buffer.int16[0] = AudioDataSideB.int16[ramBufferPlaybackPos*2];
-              myi2s_tx_buffer.int16[1] = AudioDataSideB.int16[(ramBufferPlaybackPos*2)+1];
+              if (playbackIsStereo) {
+                myi2s_tx_buffer.int16[0] = AudioDataSideB.int16[ramBufferPlaybackPos*2];
+                myi2s_tx_buffer.int16[1] = AudioDataSideB.int16[(ramBufferPlaybackPos*2)+1];
+              } else {
+                myi2s_tx_buffer.int16[0] = AudioDataSideB.int16[ramBufferPlaybackPos];
+                myi2s_tx_buffer.int16[1] = AudioDataSideB.int16[ramBufferPlaybackPos];
+              }
             }
             ramBufferPlaybackPos++;
           } else {
             if (currentPlayBuffer == 0) {
-              myi2s_tx_buffer.int16[0] = BufferA.int16[bufferPlaybackPos*2];
-              myi2s_tx_buffer.int16[1] = BufferA.int16[(bufferPlaybackPos*2)+1];
+              if (playbackIsStereo) {
+                myi2s_tx_buffer.int16[0] = BufferA.int16[bufferPlaybackPos*2];
+                myi2s_tx_buffer.int16[1] = BufferA.int16[(bufferPlaybackPos*2)+1];
+              } else {
+                myi2s_tx_buffer.int16[0] = BufferA.int16[bufferPlaybackPos];
+                myi2s_tx_buffer.int16[1] = BufferA.int16[bufferPlaybackPos];
+              }
             } else {
-              myi2s_tx_buffer.int16[0] = BufferB.int16[bufferPlaybackPos*2];
-              myi2s_tx_buffer.int16[1] = BufferB.int16[(bufferPlaybackPos*2)+1];
+              if (playbackIsStereo) {
+                myi2s_tx_buffer.int16[0] = BufferB.int16[bufferPlaybackPos*2];
+                myi2s_tx_buffer.int16[1] = BufferB.int16[(bufferPlaybackPos*2)+1];
+              } else {
+                myi2s_tx_buffer.int16[0] = BufferB.int16[bufferPlaybackPos];
+                myi2s_tx_buffer.int16[1] = BufferB.int16[bufferPlaybackPos];
+              }
             }
             bufferPlaybackPos++;
           }
@@ -707,33 +737,53 @@ void CodecDAC_isr(void)
       } else {
         if (playingFromRamBuffer) {
           if (playSlot[waveIndex] == 0) {
-            myi2s_tx_buffer.int32[0] = AudioDataSideA.int32[ramBufferPlaybackPos];
+            if (playbackIsStereo) {
+              myi2s_tx_buffer.int32[0] = AudioDataSideA.int32[ramBufferPlaybackPos];
+            } else {
+              myi2s_tx_buffer.int16[0] = AudioDataSideA.int16[ramBufferPlaybackPos];
+              myi2s_tx_buffer.int16[1] = AudioDataSideA.int16[ramBufferPlaybackPos];
+            }
           } else {
-            myi2s_tx_buffer.int32[0] = AudioDataSideB.int32[ramBufferPlaybackPos];
+            if (playbackIsStereo) {
+              myi2s_tx_buffer.int32[0] = AudioDataSideB.int32[ramBufferPlaybackPos];
+            } else {
+              myi2s_tx_buffer.int16[0] = AudioDataSideB.int16[ramBufferPlaybackPos];
+              myi2s_tx_buffer.int16[1] = AudioDataSideB.int16[ramBufferPlaybackPos];
+            }
           }
           ramBufferPlaybackPos++;
         } else {
           if (currentPlayBuffer == 0) {
-            myi2s_tx_buffer.int32[0] = BufferA.int32[bufferPlaybackPos];
+            if (playbackIsStereo) {
+              myi2s_tx_buffer.int32[0] = BufferA.int32[bufferPlaybackPos];
+            } else {
+              myi2s_tx_buffer.int16[0] = BufferA.int16[bufferPlaybackPos];
+              myi2s_tx_buffer.int16[1] = BufferA.int16[bufferPlaybackPos];
+            }
           } else {
-            myi2s_tx_buffer.int32[0] = BufferB.int32[bufferPlaybackPos];
+            if (playbackIsStereo) {
+              myi2s_tx_buffer.int32[0] = BufferB.int32[bufferPlaybackPos];
+            } else {
+              myi2s_tx_buffer.int16[0] = BufferB.int16[bufferPlaybackPos];
+              myi2s_tx_buffer.int16[1] = BufferB.int16[bufferPlaybackPos];
+            }
           }
           bufferPlaybackPos++;
         }
       }
 
       currentPlaybackPos++;
-      if (currentPlaybackPos == (waveformStartPosSD[waveIndex][currentPlaySlot] + RAM_ONSETBUFFER_SAMPLES)) {
+      if (currentPlaybackPos == (waveformStartPosSD[waveIndex][currentPlaySlot] + nRamBufferSamples)) {
         playingFromRamBuffer = false;
         currentPlayBuffer = 1-currentPlayBuffer;
         sdLoadFlag = true;
-        bufferPlaybackPos = RAM_ONSETBUFFER_SAMPLES;
+        bufferPlaybackPos = nRamBufferSamples;
       }
-      if (bufferPlaybackPos == FILE_TRANSFER_BUFFER_SIZE_SAMPLES) {
+      if (bufferPlaybackPos == nFileTransferSamples) {
         currentPlayBuffer = 1-currentPlayBuffer;
         bufferPlaybackPos = 0;
         sdLoadFlag = true;
-      }
+      }      
       playbackTime++; // Sample count for looping waves, insensitive to wave restart
       if (currentLoopMode) {
         if (!(loopDuration[waveIndex]==0)) {
@@ -873,7 +923,19 @@ void startPlayback() {
     if (waveLoaded[waveIndex]) {
       currentPlaySlot = playSlot[waveIndex];
       currentPlaybackPos = waveformStartPosSD[waveIndex][currentPlaySlot];
-      ramBufferPlaybackPos = waveformStartPosRAM[waveIndex];
+      playbackIsStereo = isStereo[waveIndex][currentPlaySlot];
+      if (playbackIsStereo) {
+        ramBufferPlaybackPos = waveformStartPosRAM[waveIndex];
+      } else {
+        ramBufferPlaybackPos = waveformStartPosRAM[waveIndex] * 2;
+      }
+      if (playbackIsStereo) {
+        nRamBufferSamples = RAM_ONSETBUFFER_SAMPLES;
+        nFileTransferSamples = FILE_TRANSFER_BUFFER_SIZE_SAMPLES;
+      } else {
+        nRamBufferSamples = RAM_ONSETBUFFER_SAMPLES * 2;
+        nFileTransferSamples = FILE_TRANSFER_BUFFER_SIZE_SAMPLES * 2;
+      }
       currentPlayBuffer = 1;
       bufferPlaybackPos = 0;
       playbackTime = 0;
