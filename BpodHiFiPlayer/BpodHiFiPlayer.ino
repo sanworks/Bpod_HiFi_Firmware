@@ -472,6 +472,7 @@ void loop() {
         if (opSource == 0) {
           wave2Stop = USBCOM.readByte();
         } else {
+          while (Serial1.available() == 0) {}
           wave2Stop = Serial1.read();
         }
         if (wave2Stop == waveIndex) {
@@ -952,6 +953,13 @@ void startPlayback() {
         }
         syncPinStartFlag = true;
         syncPinStartTimer = 0;
+      } else {
+        if (inEnvelope) {
+          if (envelopeDir == 1) { // If fading out, start fade-in in at current level
+            envelopePos = envelopeSize - envelopePos;
+          }
+          envelopeDir = 0;
+        }
       }
       isPlaying = true;
     }
@@ -959,9 +967,15 @@ void startPlayback() {
 
 void stopPlayback() {
   if (useAMEnvelope) {
+    if (inEnvelope) {
+      if (envelopeDir == 0) { // If fading in, start fade-out at current level
+        envelopePos = envelopeSize - envelopePos;
+      }
+    } else {
+      envelopePos = 0;
+    }
     inEnvelope = true;
     envelopeDir = 1;
-    envelopePos = 0;
   } else {
     schedulePlaybackStop = true;
   }
