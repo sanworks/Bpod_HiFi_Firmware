@@ -802,7 +802,11 @@ void CodecDAC_isr(void)
         }
         if (currentPlaybackPos == waveformEndPosSD[waveIndex][currentPlaySlot]) {
            currentPlaybackPos = waveformStartPosSD[waveIndex][currentPlaySlot];
-           ramBufferPlaybackPos = waveformStartPosRAM[waveIndex];
+           if (playbackIsStereo) {
+             ramBufferPlaybackPos = waveformStartPosRAM[waveIndex];
+           } else {
+             ramBufferPlaybackPos = waveformStartPosRAM[waveIndex] * 2;
+           }
            currentPlayBuffer = 1;
            bufferPlaybackPos = 0;
            playbackFilePos = currentPlaybackPos * 4; // Sound start position on microSD card in bytes
