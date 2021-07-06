@@ -52,6 +52,9 @@
 #define RAM_ONSETBUFFER_SAMPLES RAM_ONSETBUFFER_BUFFER_SIZE/4
 #define RAM_ONSETBUFFER_MAXBYTES RAM_ONSETBUFFER_BUFFER_SIZE*MAX_WAVEFORMS
 
+// Conversion macro
+#define makeUnsignedLong(msb, byte2, byte3, lsb) ((msb << 24) | (byte2 << 16) | (byte3 << 8) | (lsb))
+
 // --- TI PCM5122 DAC macros ---
 
 #define PCM5122_ADDRESS 0x4D
@@ -82,10 +85,12 @@ boolean useHeadphoneAmp = false;
 byte headphoneAmpGain = 52; // Range = 0-63. 52 = –0.3dB attenuation (closest position to 0). See table 2 on p.17 of TPA6130A2 datasheet for exact attenuation at each position
 
 // Loop Mode
-byte loopMode[MAX_WAVEFORMS] = {0}; // (for each sound) Loops waveform until loopDuration seconds
-uint32_t loopDuration[MAX_WAVEFORMS] = {0}; // Duration of loop for loop mode (in samples). 0 = loop until canceled
+byte loopMode[MAX_WAVEFORMS][2] = {0}; // (for each sound) Loops waveform until loopDuration seconds
+uint32_t loopDuration[MAX_WAVEFORMS][2] = {0}; // Duration of loop for loop mode (in samples). 0 = loop until canceled
 boolean currentLoopMode = false; // Loop mode, for the currently triggered sound
+uint32_t currentLoopDuration = 0; // Loop duration, for the currently triggered sound
 uint32_t playbackTime = 0; // Time (in samples) since looping channel was triggered (used to compute looped playback end)
+
 
 // Module setup
 char moduleName[] = "HiFi"; // Name of module for manual override UI and state machine assemble
@@ -335,18 +340,6 @@ void loop() {
           }
         }
       break;
-      case 'O': // Set loop mode (for each channel)
-        if (opSource == 0){
-          USBCOM.readByteArray(loopMode, MAX_WAVEFORMS);
-          USBCOM.writeByte(1); // Acknowledge
-        }
-      break;
-      case '-': // Set loop duration (for each channel)
-        if (opSource == 0){
-          USBCOM.readUint32Array(loopDuration,MAX_WAVEFORMS);
-          USBCOM.writeByte(1); // Acknowledge
-        }
-      break;
       case 'H': // Enable headphone amp
         if (opSource == 0){
           useHeadphoneAmp = USBCOM.readByte();
@@ -427,16 +420,19 @@ void loop() {
       case 'L':
         if (opSource == 0) {
           serialReadOK = 1;
-          Serial.readBytes(fileTransferBuffer, 2);
+          while (Serial.available() == 0) {}
+          Serial.readBytes(fileTransferBuffer, 11);
           loadIndex = fileTransferBuffer[0];
           loadSlot = 1-playSlot[loadIndex];
           isStereo[loadIndex][loadSlot] = fileTransferBuffer[1];
-          loadingBytesPerSample = 2; // Assume mono
+          loopMode[loadIndex][loadSlot] = fileTransferBuffer[2];
+          loopDuration[loadIndex][loadSlot] = makeUnsignedLong(fileTransferBuffer[6], fileTransferBuffer[5], fileTransferBuffer[4], fileTransferBuffer[3]);
+          loadingBytesPerSample = 2; // Default to mono
           if (isStereo[loadIndex][loadSlot]) {
             loadingBytesPerSample = 4;
           }
           if (loadIndex < MAX_WAVEFORMS) {
-            nSamples[loadIndex][loadSlot] = USBCOM.readUint32();
+            nSamples[loadIndex][loadSlot] = makeUnsignedLong(fileTransferBuffer[10], fileTransferBuffer[9], fileTransferBuffer[8], fileTransferBuffer[7]);
             waveformEndPosSD[loadIndex][loadSlot] = (waveformStartPosSD[loadIndex][loadSlot] + nSamples[loadIndex][loadSlot]);
             nWaveformBytes[loadIndex][loadSlot] = nSamples[loadIndex][loadSlot] * loadingBytesPerSample;
             nFullReads = (unsigned long)(floor((double)nWaveformBytes[loadIndex][loadSlot] / (double)FILE_TRANSFER_BUFFER_SIZE));
@@ -787,15 +783,15 @@ void CodecDAC_isr(void)
       }      
       playbackTime++; // Sample count for looping waves, insensitive to wave restart
       if (currentLoopMode) {
-        if (!(loopDuration[waveIndex]==0)) {
+        if (!(currentLoopDuration==0)) {
           if (useAMEnvelope) {
-            if (playbackTime == loopDuration[waveIndex] - envelopeSize - 1) {
+            if (playbackTime == currentLoopDuration - envelopeSize - 1) {
               inEnvelope = true;
               envelopeDir = 1;
               envelopePos = 0;
             }
           } else {
-            if (playbackTime > loopDuration[waveIndex]) {
+            if (playbackTime > currentLoopDuration) {
               schedulePlaybackStop = true;
             }
           }
@@ -948,7 +944,8 @@ void startPlayback() {
       sdLoadFlag = true;
       playingFromRamBuffer = true;
       isActiveInterrupt = true;
-      currentLoopMode = loopMode[waveIndex];
+      currentLoopMode = loopMode[waveIndex][currentPlaySlot];
+      currentLoopDuration = loopDuration[waveIndex][currentPlaySlot];
       if (!isPlaying) {
         if (useAMEnvelope) {
           inEnvelope = true;
@@ -1102,6 +1099,8 @@ void set_PCM1796_SF() {
   byte Vals_48[] = {0x0C,0x35,0xF0,0x09,0x50,0x02,0x10,0x40,0x01,0x90,0x00,0x42,0x46,0xAC};
   byte Vals_96[] = {0x0C,0x35,0xF0,0x09,0x50,0x02,0x10,0x40,0x01,0x47,0x00,0x32,0x46,0xAC};
   byte Vals_192[] = {0x0C,0x35,0xF0,0x09,0x50,0x02,0x10,0x40,0x01,0x22,0x80,0x22,0x46,0xAC};
+  i2c_write(PCM1796_ADDRESS, 18, B11000001); // Soft mute enable 
+  i2c_write(PCM1796_ADDRESS, 19, B00010010); // DAC disable
   for (int i = 0; i < sizeof(REGs); i++) {
     switch (samplingRate) {
       case 44100:
@@ -1118,6 +1117,7 @@ void set_PCM1796_SF() {
       break;
     }
   }
+  setup_PCM1796();
 }
 
 void setDigitalAttenuation(byte attenuationFactor) {
