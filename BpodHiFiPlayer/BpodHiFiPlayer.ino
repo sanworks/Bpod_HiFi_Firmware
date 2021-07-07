@@ -80,6 +80,11 @@ FsFile Wave0; // File on microSD card, to store waveform data
 byte fileTransferBuffer[FILE_TRANSFER_BUFFER_SIZE] = {0};
 bool ready = false;
 
+// PSRAM setup (for bench testing only, PSRAM is not used in current firmware)
+extern "C" uint8_t external_psram_size;
+uint32_t *memory_begin, *memory_end;
+boolean memOK = false;
+
 // Headphone amp setup
 boolean useHeadphoneAmp = false;
 byte headphoneAmpGain = 52; // Range = 0-63. 52 = –0.3dB attenuation (closest position to 0). See table 2 on p.17 of TPA6130A2 datasheet for exact attenuation at each position
@@ -227,6 +232,8 @@ union {
 uint32_t bufferPlaybackPos = 0;
 
 void setup() {
+  memory_begin = (uint32_t *)(0x70000000); // PSRAM start address
+  memory_end = (uint32_t *)(0x70000000 + external_psram_size * 1048576); // PSRAM end address
   Serial.setTimeout(1000);
   pinMode(SYNC_PIN, OUTPUT);
   pinMode(RESET_PIN, OUTPUT);
@@ -473,6 +480,26 @@ void loop() {
         }
         if (wave2Stop == waveIndex) {
           stopPlayback();
+        }
+      break;
+      case 'T': // Test PSRAM
+        // This memory test was adopted from PJRC's teensy41_psram_memtest repository : https://github.com/PaulStoffregen/teensy41_psram_memtest
+        if (opSource == 0) {
+          Serial.write(external_psram_size);
+          memOK = true;
+          if (!check_fixed_pattern(0x55555555)) {memOK = false;}
+          if (!check_fixed_pattern(0x33333333)) {memOK = false;}
+          if (!check_fixed_pattern(0x0F0F0F0F)) {memOK = false;}
+          if (!check_fixed_pattern(0x00FF00FF)) {memOK = false;}
+          if (!check_fixed_pattern(0x0000FFFF)) {memOK = false;}
+          if (!check_fixed_pattern(0xAAAAAAAA)) {memOK = false;}
+          if (!check_fixed_pattern(0xCCCCCCCC)) {memOK = false;}
+          if (!check_fixed_pattern(0xF0F0F0F0)) {memOK = false;}
+          if (!check_fixed_pattern(0xFF00FF00)) {memOK = false;}
+          if (!check_fixed_pattern(0xFFFF0000)) {memOK = false;}
+          if (!check_fixed_pattern(0xFFFFFFFF)) {memOK = false;}
+          if (!check_fixed_pattern(0x00000000)) {memOK = false;}
+          Serial.write(memOK);
         }
       break;  
     }
@@ -1141,6 +1168,22 @@ void setStartSamplePositions() {
     waveformStartPosSD[i][1] = (i * MAX_SAMPLING_RATE * MAX_SECONDS_PER_WAVEFORM) + (HALF_MEMORY_SD/NBYTES_PER_SAMPLE);
     waveformEndPosSD[i][1] = waveformStartPosSD[i][1] + (MAX_SAMPLING_RATE * MAX_SECONDS_PER_WAVEFORM);
   }
+}
+
+// This memory test was adopted from PJRC's teensy41_psram_memtest repository : https://github.com/PaulStoffregen/teensy41_psram_memtest
+bool check_fixed_pattern(uint32_t pattern)
+{
+  volatile uint32_t *p;
+  for (p = memory_begin; p < memory_end; p++) {
+    *p = pattern;
+  }
+  arm_dcache_flush_delete((void *)memory_begin,
+    (uint32_t)memory_end - (uint32_t)memory_begin);
+  for (p = memory_begin; p < memory_end; p++) {
+    uint32_t actual = *p;
+    if (actual != pattern) return false;
+  }
+  return true;
 }
 
 void i2c_write(byte i2cAddress, byte address, byte val) {
