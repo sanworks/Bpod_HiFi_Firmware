@@ -19,7 +19,7 @@
 
 */
 
-// Note: Requires Arduino 1.8.13 or newer, and Teensyduino 1.5.4 (tested on 1.5.4 beta 7)
+// Note: Requires Arduino 1.8.13 or newer, and Teensyduino 1.5.4
 
 #include <Audio.h>
 #include <utility/imxrt_hw.h>
@@ -37,13 +37,11 @@
 #define BIT_DEPTH 16 // Bits per sample
 #define MAX_SAMPLING_RATE 192000 // Hz
 #define MAX_WAVEFORMS 20 // Number of separate audio waveforms the device can store
-#define MAX_SECONDS_PER_WAVEFORM 30 // Maximum number of seconds per waveform
+#define MAX_SECONDS_PER_WAVEFORM 30 // Maximum number of seconds allocated per stereo waveform at max sampling rate
 #define MAX_ENVELOPE_SIZE 2000 // Maximum size of AM onset/offset envelope (in samples)
 #define SYNC_PIN 30 // GPIO pin controlling SYNC BNC output
-#define SYNC_PIN_DELAY_ONSET 36 // Number of DMA ISR calls before sync line goes high after sound onset
-#define SYNC_PIN_DELAY_OFFSET 42 // Number of DMA ISR calls before sync line goes low after sound end
-#define FILE_TRANSFER_BUFFER_SIZE 128000
-#define RAM_ONSETBUFFER_BUFFER_SIZE 12000 // RAM per waveform allocated to the first samples of the wave
+#define FILE_TRANSFER_BUFFER_SIZE 128000 // Buffer size used for both USB and microSD data transfer (in bytes)
+#define RAM_ONSETBUFFER_BUFFER_SIZE 12000 // RAM per waveform allocated to the first samples of the wave (in bytes)
 
 #define FILE_TRANSFER_BUFFER_SIZE_SAMPLES FILE_TRANSFER_BUFFER_SIZE/4
 #define MAX_MEMORY_BYTES FILE_TRANSFER_BUFFER_SIZE*MAX_WAVEFORMS
@@ -70,6 +68,15 @@
 
 #if !defined(DAC2_PRO) && !defined(DAC2_HD)
 #error Error! You must uncomment a macro in the Device Selection section at the top of this sketch to indicate the target HiFiBerry board
+#endif
+
+// --- Sync pin offset
+#if defined(DAC2_PRO)
+  #define SYNC_PIN_DELAY_ONSET 24 // Number of DMA ISR calls before sync line goes high after sound onset
+  #define SYNC_PIN_DELAY_OFFSET 28 // Number of DMA ISR calls before sync line goes low after sound end
+#elif defined (DAC2_HD)
+  #define SYNC_PIN_DELAY_ONSET 38 
+  #define SYNC_PIN_DELAY_OFFSET 42
 #endif
 
 IntervalTimer hardwareTimer;
