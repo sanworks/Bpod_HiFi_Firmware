@@ -19,7 +19,7 @@
 
 */
 
-// Note: Requires Arduino 1.8.13 or newer, and Teensyduino 1.5.4
+// Note: Requires Arduino 1.8.13 or newer, and Teensyduino 1.5.4 or newer
 
 #include <Audio.h>
 #include <utility/imxrt_hw.h>
@@ -32,7 +32,8 @@
 // #define DAC2_PRO
 // #define DAC2_HD
 //-------------------------------------------------
-#define FirmwareVersion 1
+#define HARDWARE_VERSION 1
+#define FirmwareVersion 3
 #define RESET_PIN 33
 #define BIT_DEPTH 16 // Bits per sample
 #define MAX_SAMPLING_RATE 192000 // Hz
@@ -79,6 +80,10 @@
   #define SYNC_PIN_DELAY_OFFSET 42
 #endif
 
+#if HARDWARE_VERSION == 1
+  const byte circuitRevisionArray[5] = {2,3,4,5,35};
+#endif
+
 IntervalTimer hardwareTimer;
 
 // microSD setup
@@ -106,6 +111,7 @@ uint32_t playbackTime = 0; // Time (in samples) since looping channel was trigge
 
 // Module setup
 char moduleName[] = "HiFi"; // Name of module for manual override UI and state machine assemble
+byte circuitRevision = 0; // In setup, circuitRevision will be read from an array of pins on the PCB
 
 
 static union {
@@ -246,6 +252,14 @@ void setup() {
   pinMode(RESET_PIN, OUTPUT);
   digitalWrite(SYNC_PIN, LOW);
   digitalWrite(RESET_PIN, LOW);
+  // Read hardware revision from circuit board (an array of grounded pins indicates revision in binary, grounded = 1, floating = 0)
+  circuitRevision = 0;
+  for (int i = 0; i < 5; i++) {
+    pinMode(circuitRevisionArray[i], INPUT_PULLUP);
+    circuitRevision += pow(2, i)*digitalRead(circuitRevisionArray[i]);
+    pinMode(circuitRevisionArray[i], INPUT);
+  }
+  circuitRevision = 31-circuitRevision;
   CodecDAC_begin();
   Wire.begin();
   setAmpPower(false); // Disable headphone amp
@@ -882,7 +896,7 @@ void CodecDAC_isr(void)
               synthSampleR = (rand() % synthAmplitudeBits) - synthHalfAmplitudeBits;
             break;
             case 1: // Sine
-              synthSampleL = round(sin(synthTime)*synthAmplitudeBits);
+              synthSampleL = round(sin(synthTime)*synthHalfAmplitudeBits);
               synthSampleR = synthSampleL;
               synthTime += synthTimeStep;            
             break;
@@ -1233,6 +1247,11 @@ uint32_t readUint32FromSource(byte opSource) {
 }
 
 void returnModuleInfo() {
+  boolean fsmSupportsHwInfo = false;
+  delayMicroseconds(100);
+  if (StateMachineCOM.available() == 1) { // FSM firmware v23 or newer sends a second info request byte to indicate that it supports additional ops
+    if (StateMachineCOM.readByte() == 255) {fsmSupportsHwInfo = true;}
+  }
   StateMachineCOM.writeByte(65); // Acknowledge
   StateMachineCOM.writeUint32(FirmwareVersion); // 4-byte firmware version
   StateMachineCOM.writeByte(sizeof(moduleName) - 1); // Length of module name
@@ -1240,5 +1259,13 @@ void returnModuleInfo() {
   StateMachineCOM.writeByte(1); // 1 if more info follows, 0 if not
   StateMachineCOM.writeByte('#'); // Op code for: Number of behavior events this module can generate
   StateMachineCOM.writeByte(MAX_WAVEFORMS);
+  if (fsmSupportsHwInfo) {
+    StateMachineCOM.writeByte(1); // 1 if more info follows, 0 if not
+    StateMachineCOM.writeByte('V'); // Op code for: Hardware major version
+    StateMachineCOM.writeByte(HARDWARE_VERSION); 
+    StateMachineCOM.writeByte(1); // 1 if more info follows, 0 if not
+    StateMachineCOM.writeByte('v'); // Op code for: Hardware minor version
+    StateMachineCOM.writeByte(circuitRevision); 
+  }
   StateMachineCOM.writeByte(0); // 1 if more info follows, 0 if not
 }
