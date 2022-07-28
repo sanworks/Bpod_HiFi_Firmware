@@ -171,6 +171,7 @@ boolean newWaveTriggered = false; // True if a new wave was triggered while the 
 byte loadingBytesPerSample = 0; // bytes per sample for sound currently loading (2 if mono, 4 if stereo)
 uint32_t nRamBufferSamples = 0;
 uint32_t nFileTransferSamples = 0;
+boolean scanSMDuringUSBTransfer = true; // Scan state machine serial port during USB data transfer
 
 // Stereo
 boolean isStereo[MAX_WAVEFORMS][2] = {false}; // True if the waveform is stereo
@@ -522,6 +523,10 @@ void loop() {
           if (!check_fixed_pattern(0x00000000)) {memOK = false;}
           Serial.write(memOK);
         }
+      break;
+      case '&': // Enable/Disable state machine port scanning during USB data transfer
+        scanSMDuringUSBTransfer = USBCOM.readByte();
+        USBCOM.writeByte(1); // Acknowledge
       break;  
     }
   }
@@ -545,7 +550,9 @@ void loop() {
     hardwareTimer.end();
   } else if (safeLoadingToSD) {
     if (nBuffersLoaded < nTotalReads) {
-      hardwareTimer.begin(handler, 50);
+      if (scanSMDuringUSBTransfer) {
+        hardwareTimer.begin(handler, 50);
+      }
       if ((nBuffersLoaded == nTotalReads - 1) && (partialReadSize > 0)) {
         thisReadTransferSize = partialReadSize;
       } else {
@@ -577,7 +584,9 @@ void loop() {
         Serial.write(serialReadOK); Serial.send_now();
         Serial.setTimeout(1000);
       }
-      hardwareTimer.end();
+      if (scanSMDuringUSBTransfer) {
+        hardwareTimer.end();
+      }
     }  
   }
 }
