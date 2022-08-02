@@ -171,7 +171,6 @@ boolean newWaveTriggered = false; // True if a new wave was triggered while the 
 byte loadingBytesPerSample = 0; // bytes per sample for sound currently loading (2 if mono, 4 if stereo)
 uint32_t nRamBufferSamples = 0;
 uint32_t nFileTransferSamples = 0;
-boolean scanSMDuringUSBTransfer = true; // Scan state machine serial port during USB data transfer
 
 // Stereo
 boolean isStereo[MAX_WAVEFORMS][2] = {false}; // True if the waveform is stereo
@@ -196,7 +195,7 @@ byte fadeDirection = 0;
 const double twoPi = 6.28318530717958;
 
 byte synthWaveform = 0; // 0 = White Noise 1 = Sine
-boolean safeLoadingToSD = false;
+volatile boolean safeLoadingToSD = false;
 uint32_t thisReadTransferSize = 0; // Transfer size of current USB -> microSD read op
 uint32_t nTotalReads = 0; // Number of buffers to read in USB -> microSD transmission
 boolean skipCycle = false;
@@ -244,6 +243,7 @@ union {
 } BufferB; 
 
 uint32_t bufferPlaybackPos = 0;
+volatile boolean timerActive = false;
 
 void setup() {
   memory_begin = (uint32_t *)(0x70000000); // PSRAM start address
@@ -322,9 +322,11 @@ void loop() {
     if (USBCOM.available() > 0) {
         opCode = USBCOM.readByte();
         opSource = 0;
-    } else if (Serial1.available() > 0) {
-      opCode = Serial1.read();
-      opSource = 1;
+    } else if (!timerActive) {
+      if (Serial1.available() > 0) {
+        opCode = Serial1.read();
+        opSource = 1;
+      }
     }
   }
   if (opCode > 0) {
@@ -472,6 +474,8 @@ void loop() {
             nBuffersLoaded = 0;
             safeLoadingToSD = true;
             Serial.setTimeout(200);
+            timerActive = true;
+            hardwareTimer.begin(handler, 50);
             // Execution continues from the main loop below, outside the switch/case for handling op codes
           }
         }
@@ -524,10 +528,6 @@ void loop() {
           Serial.write(memOK);
         }
       break;
-      case '&': // Enable/Disable state machine port scanning during USB data transfer
-        scanSMDuringUSBTransfer = USBCOM.readByte();
-        USBCOM.writeByte(1); // Acknowledge
-      break;  
     }
   }
   // MicroSD transfer
@@ -547,12 +547,11 @@ void loop() {
       playbackFilePos += FILE_TRANSFER_BUFFER_SIZE;
     }
     newWaveTriggered = false;
-    hardwareTimer.end();
+    if (!safeLoadingToSD) {
+      hardwareTimer.end();
+    }
   } else if (safeLoadingToSD) {
     if (nBuffersLoaded < nTotalReads) {
-      if (scanSMDuringUSBTransfer) {
-        hardwareTimer.begin(handler, 50);
-      }
       if ((nBuffersLoaded == nTotalReads - 1) && (partialReadSize > 0)) {
         thisReadTransferSize = partialReadSize;
       } else {
@@ -583,9 +582,8 @@ void loop() {
         waveLoaded[loadIndex] = true;
         Serial.write(serialReadOK); Serial.send_now();
         Serial.setTimeout(1000);
-      }
-      if (scanSMDuringUSBTransfer) {
         hardwareTimer.end();
+        timerActive = false;
       }
     }  
   }
