@@ -2,7 +2,7 @@
   ----------------------------------------------------------------------------
 
   This file is part of the Sanworks Bpod_HiFi_Firmware repository
-  Copyright (C) 2021 Sanworks LLC, Rochester, New York, USA
+  Copyright (C) 2022 Sanworks LLC, Rochester, New York, USA
 
   ----------------------------------------------------------------------------
 
@@ -244,6 +244,7 @@ union {
 
 uint32_t bufferPlaybackPos = 0;
 volatile boolean timerActive = false;
+volatile boolean scanSMDuringUSBTransfer = true;
 
 void setup() {
   memory_begin = (uint32_t *)(0x70000000); // PSRAM start address
@@ -475,7 +476,9 @@ void loop() {
             safeLoadingToSD = true;
             Serial.setTimeout(200);
             timerActive = true;
-            hardwareTimer.begin(handler, 50);
+            if (scanSMDuringUSBTransfer) {
+              hardwareTimer.begin(handler, 50);
+            }
             // Execution continues from the main loop below, outside the switch/case for handling op codes
           }
         }
@@ -507,6 +510,10 @@ void loop() {
         if (wave2Stop == waveIndex) {
           stopPlayback();
         }
+      break;
+      case '&':
+        scanSMDuringUSBTransfer = USBCOM.readByte();
+        USBCOM.writeByte(1); // Ack
       break;
       case 'T': // Test PSRAM
         // This memory test was adopted from PJRC's teensy41_psram_memtest repository : https://github.com/PaulStoffregen/teensy41_psram_memtest
@@ -582,7 +589,9 @@ void loop() {
         waveLoaded[loadIndex] = true;
         Serial.write(serialReadOK); Serial.send_now();
         Serial.setTimeout(1000);
-        hardwareTimer.end();
+        if (scanSMDuringUSBTransfer) {
+          hardwareTimer.end();
+        }
         timerActive = false;
       }
     }  
