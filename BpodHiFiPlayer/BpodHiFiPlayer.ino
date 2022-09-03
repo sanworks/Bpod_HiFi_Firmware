@@ -19,7 +19,7 @@
 
 */
 
-// Note: Requires Arduino 1.8.13 or newer, and Teensyduino 1.5.4 or newer
+// Note: Requires Arduino 1.8.19 or newer, and Teensyduino 1.5.7 or newer
 
 #include <Audio.h>
 #include <utility/imxrt_hw.h>
@@ -30,10 +30,10 @@
 //-------------------DEVICE SELECTION---------------
 // Uncomment one line below to specify target hardware
 // #define DAC2_PRO
-// #define DAC2_HD
+#define DAC2_HD
 //-------------------------------------------------
+#define FIRMWARE_VERSION 4
 #define HARDWARE_VERSION 1
-#define FirmwareVersion 3
 #define RESET_PIN 33
 #define BIT_DEPTH 16 // Bits per sample
 #define MAX_SAMPLING_RATE 192000 // Hz
@@ -201,9 +201,9 @@ uint32_t nTotalReads = 0; // Number of buffers to read in USB -> microSD transmi
 boolean skipCycle = false;
 
 // Sound slot management
-byte playSlot[MAX_WAVEFORMS] = {0}; // 0 or 1. New waveforms are loaded into the slot not in use, and newly loaded waveforms are made current by '*' command
-boolean newWaveLoaded[MAX_WAVEFORMS] = {false}; // True if a new waveform was loaded and not yet made current with '*' command
-boolean waveLoaded[MAX_WAVEFORMS] = {false}; // True if any waveform was loaded to each slot
+byte playSlot[MAX_WAVEFORMS] = {0}; // 0 or 1. New waveforms are loaded into the slot not in use, and newly loaded waveforms are made current by '*' (push) command
+boolean newWaveLoaded[MAX_WAVEFORMS] = {false}; // True for each slot if a new waveform was loaded and not yet made current with '*' (push) command
+boolean waveLoaded[MAX_WAVEFORMS] = {false}; // True for each slot if a waveform is currently loaded and has been made current with '*' (push) command
 byte currentPlaySlot = 0; // playSlot for currently playing sound
 byte loadSlot = 0;
 
@@ -488,6 +488,7 @@ void loop() {
           if (newWaveLoaded[i]) {
             playSlot[i] = 1-playSlot[i];
             newWaveLoaded[i] = false;
+            waveLoaded[i] = true;
           }
         }
         if (opSource == 0) {
@@ -586,7 +587,6 @@ void loop() {
       if (nBuffersLoaded == nTotalReads) {
         safeLoadingToSD = false;
         newWaveLoaded[loadIndex] = true;
-        waveLoaded[loadIndex] = true;
         Serial.write(serialReadOK); Serial.send_now();
         Serial.setTimeout(1000);
         if (scanSMDuringUSBTransfer) {
@@ -1269,7 +1269,7 @@ void returnModuleInfo() {
     if (StateMachineCOM.readByte() == 255) {fsmSupportsHwInfo = true;}
   }
   StateMachineCOM.writeByte(65); // Acknowledge
-  StateMachineCOM.writeUint32(FirmwareVersion); // 4-byte firmware version
+  StateMachineCOM.writeUint32(FIRMWARE_VERSION); // 4-byte firmware version
   StateMachineCOM.writeByte(sizeof(moduleName) - 1); // Length of module name
   StateMachineCOM.writeCharArray(moduleName, sizeof(moduleName) - 1); // Module name
   StateMachineCOM.writeByte(1); // 1 if more info follows, 0 if not
