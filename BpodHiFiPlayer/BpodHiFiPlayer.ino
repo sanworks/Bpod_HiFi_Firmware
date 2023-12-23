@@ -2,7 +2,7 @@
   ----------------------------------------------------------------------------
 
   This file is part of the Sanworks Bpod_HiFi_Firmware repository
-  Copyright (C) 2022 Sanworks LLC, Rochester, New York, USA
+  Copyright (C) Sanworks LLC, Rochester, New York, USA
 
   ----------------------------------------------------------------------------
 
@@ -30,9 +30,9 @@
 //-------------------DEVICE SELECTION---------------
 // Uncomment one line below to specify target hardware
 // #define DAC2_PRO
-#define DAC2_HD
+// #define DAC2_HD
 //-------------------------------------------------
-#define FIRMWARE_VERSION 4
+#define FIRMWARE_VERSION 5
 #define HARDWARE_VERSION 1
 #define RESET_PIN 33
 #define BIT_DEPTH 16 // Bits per sample
@@ -1129,8 +1129,8 @@ void setup_PCM5122_I2SMaster() {
   i2c_write(PCM5122_ADDRESS, 19, B00000000); // Clock sync start
 
   // Finish startup
-  i2c_write(PCM5122_ADDRESS, 61, B00110001); // Set left ch volume attenuation  = -0.5dB
-  i2c_write(PCM5122_ADDRESS, 62, B00110001); // Set right ch volume attenuation = -0.5dB
+  i2c_write(PCM5122_ADDRESS, 61, digitalAttenuation+48); // Set left ch volume attenuation
+  i2c_write(PCM5122_ADDRESS, 62, digitalAttenuation+48); // Set right ch volume attenuation
   i2c_write(PCM5122_ADDRESS, 65, B00000000); // Set mute off
   i2c_write(PCM5122_ADDRESS, 2,  B00000000); // Power --> On
 }
@@ -1151,8 +1151,8 @@ void setup_PCM1796() {
   delay(1);
   digitalWrite(RESET_PIN, HIGH);
   delay(10);
-  i2c_write(PCM1796_ADDRESS, 16, B11111110); // -0.5 DB
-  i2c_write(PCM1796_ADDRESS, 17, B11111110); // -0.5 DB
+  i2c_write(PCM1796_ADDRESS, 16, 255-digitalAttenuation);
+  i2c_write(PCM1796_ADDRESS, 17, 255-digitalAttenuation); 
   i2c_write(PCM1796_ADDRESS, 18, B11000000); 
   i2c_write(PCM1796_ADDRESS, 19, B00000000); 
 }
@@ -1185,6 +1185,7 @@ void set_PCM1796_SF() {
 }
 
 void setDigitalAttenuation(byte attenuationFactor) {
+  digitalAttenuation = attenuationFactor;
   #ifdef DAC2_HD
     i2c_write(PCM1796_ADDRESS, 16, 255-attenuationFactor);
     i2c_write(PCM1796_ADDRESS, 17, 255-attenuationFactor);
