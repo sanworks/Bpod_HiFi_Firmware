@@ -75,7 +75,7 @@
   #define SYNC_PIN_DELAY_ONSET 24 // Number of DMA ISR calls before sync line goes high after sound onset
   #define SYNC_PIN_DELAY_OFFSET 28 // Number of DMA ISR calls before sync line goes low after sound end
 #elif defined (DAC2_HD)
-  #define SYNC_PIN_DELAY_ONSET 38 
+  #define SYNC_PIN_DELAY_ONSET 38
   #define SYNC_PIN_DELAY_OFFSET 42
 #endif
 
@@ -234,7 +234,7 @@ union {
     byte byteArray[FILE_TRANSFER_BUFFER_SIZE];
     int16_t int16[FILE_TRANSFER_BUFFER_SIZE/2];
     int32_t int32[FILE_TRANSFER_BUFFER_SIZE/4];
-} BufferB; 
+} BufferB;
 
 uint32_t bufferPlaybackPos = 0;
 
@@ -258,7 +258,7 @@ void setup() {
     setup_PCM5122_I2SMaster();
     hardwareVersion = 0;
   #endif
-  
+
   Serial1.begin(1312500);
   setStartSamplePositions();
   SDcard.begin(SdioConfig(FIFO_SDIO));
@@ -267,7 +267,7 @@ void setup() {
   Wave0.preAllocate(HALF_MEMORY_SD * 2);
   while (sdBusy()) {}
   Wave0.seek(waveformStartPosSD[waveIndex][playSlot[waveIndex]] * 4);
-  
+
   #ifdef DAC2_PRO
     // Turn on LED (remove this in deployment version)
     LED_Enabled = true;
@@ -412,8 +412,8 @@ void loop() {
         }
       break;
       case 'F': // Set synth frequency
-        newFreq = readUint32FromSource(opSource);  
-        synthFreq = ((double)newFreq)/1000; 
+        newFreq = readUint32FromSource(opSource);
+        synthFreq = ((double)newFreq)/1000;
         synthTimeStep = twoPi/((double)samplingRate/synthFreq);
         if (opSource == 0) {
           USBCOM.writeByte(1); // Acknowledge
@@ -508,23 +508,26 @@ void loop() {
           if (!check_fixed_pattern(0x00000000)) {memOK = false;}
           Serial.write(memOK);
         }
-      break;  
+      break;
+      case 'V':
+        USBCOM.writeUint32(FirmwareVersion); // 4-byte firmware version
+        break;
     }
   }
   // MicroSD transfer
   if (isPlaying && sdLoadFlag) {
     hardwareTimer.begin(handler, 50);
     sdLoadFlag = false;
-    while (sdBusy()) {}  
+    while (sdBusy()) {}
     Wave0.seek(playbackFilePos);
-    while (sdBusy()) {}   
+    while (sdBusy()) {}
     if (currentPlayBuffer == 1) {
       Wave0.read(BufferA.byteArray, FILE_TRANSFER_BUFFER_SIZE);
     } else {
       Wave0.read(BufferB.byteArray, FILE_TRANSFER_BUFFER_SIZE);
     }
     while (sdBusy()) {}
-    if (!newWaveTriggered) { // If a new sound was not triggered during the SD read  
+    if (!newWaveTriggered) { // If a new sound was not triggered during the SD read
       playbackFilePos += FILE_TRANSFER_BUFFER_SIZE;
     }
     newWaveTriggered = false;
@@ -551,7 +554,7 @@ void loop() {
           memcpy(AudioDataSideA.byteArray + loadingRamPos, fileTransferBuffer, RAM_ONSETBUFFER_BUFFER_SIZE);
         }
       }
-      loadingFilePos += thisReadTransferSize;   
+      loadingFilePos += thisReadTransferSize;
       if (nSerialBytesRead != thisReadTransferSize) {
         serialReadOK = 0;
       }
@@ -564,7 +567,7 @@ void loop() {
         Serial.setTimeout(1000);
       }
       hardwareTimer.end();
-    }  
+    }
   }
 }
 
@@ -814,7 +817,7 @@ void CodecDAC_isr(void)
         currentPlayBuffer = 1-currentPlayBuffer;
         bufferPlaybackPos = 0;
         sdLoadFlag = true;
-      }      
+      }
       playbackTime++; // Sample count for looping waves, insensitive to wave restart
       if (currentLoopMode) {
         if (!(currentLoopDuration==0)) {
@@ -884,7 +887,7 @@ void CodecDAC_isr(void)
             case 1: // Sine
               synthSampleL = round(sin(synthTime)*synthAmplitudeBits);
               synthSampleR = synthSampleL;
-              synthTime += synthTimeStep;            
+              synthTime += synthTimeStep;
             break;
           }
           myi2s_tx_buffer.int16[0] = synthSampleL;
@@ -1055,7 +1058,7 @@ void setup_PCM5122_I2SMaster() {
   i2c_write(PCM5122_ADDRESS, 37, B01111101); // Ignore various errors
   i2c_write(PCM5122_ADDRESS, 4,  B00000000); // Disable PLL = 0 = off
   i2c_write(PCM5122_ADDRESS, 14, B00110000); //DAC clock source selection = 011 = SCK clock
-  
+
   switch (samplingRate) {
     case 44100:
         i2c_write(PCM5122_ADDRESS, 32, B00000111); //Master mode BCK divider
@@ -1094,7 +1097,7 @@ void setup_PCM5122_I2SMaster() {
         }
     break;
   }
-  
+
   i2c_write(PCM5122_ADDRESS, 19, B00000001); // Clock sync request
   i2c_write(PCM5122_ADDRESS, 19, B00000000); // Clock sync start
 
@@ -1123,8 +1126,8 @@ void setup_PCM1796() {
   delay(10);
   i2c_write(PCM1796_ADDRESS, 16, B11111110); // -0.5 DB
   i2c_write(PCM1796_ADDRESS, 17, B11111110); // -0.5 DB
-  i2c_write(PCM1796_ADDRESS, 18, B11000000); 
-  i2c_write(PCM1796_ADDRESS, 19, B00000000); 
+  i2c_write(PCM1796_ADDRESS, 18, B11000000);
+  i2c_write(PCM1796_ADDRESS, 19, B00000000);
 }
 
 void set_PCM1796_SF() {
@@ -1133,7 +1136,7 @@ void set_PCM1796_SF() {
   byte Vals_48[] = {0x0C,0x35,0xF0,0x09,0x50,0x02,0x10,0x40,0x01,0x90,0x00,0x42,0x46,0xAC};
   byte Vals_96[] = {0x0C,0x35,0xF0,0x09,0x50,0x02,0x10,0x40,0x01,0x47,0x00,0x32,0x46,0xAC};
   byte Vals_192[] = {0x0C,0x35,0xF0,0x09,0x50,0x02,0x10,0x40,0x01,0x22,0x80,0x22,0x46,0xAC};
-  i2c_write(PCM1796_ADDRESS, 18, B11000001); // Soft mute enable 
+  i2c_write(PCM1796_ADDRESS, 18, B11000001); // Soft mute enable
   i2c_write(PCM1796_ADDRESS, 19, B00010010); // DAC disable
   for (int i = 0; i < sizeof(REGs); i++) {
     switch (samplingRate) {
@@ -1194,7 +1197,7 @@ bool check_fixed_pattern(uint32_t pattern)
 }
 
 void i2c_write(byte i2cAddress, byte address, byte val) {
-  Wire.beginTransmission(i2cAddress);  
+  Wire.beginTransmission(i2cAddress);
   Wire.write(address);
   Wire.write(val);
   Wire.endTransmission();
