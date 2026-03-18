@@ -32,7 +32,7 @@
 // #define DAC2_PRO
 // #define DAC2_HD
 //-------------------------------------------------
-#define FIRMWARE_VERSION 5
+#define FIRMWARE_VERSION 6
 #define HARDWARE_VERSION 1
 #define RESET_PIN 33
 #define BIT_DEPTH 16 // Bits per sample
@@ -91,6 +91,8 @@ SdFs SDcard;
 FsFile Wave0; // File on microSD card, to store waveform data
 byte fileTransferBuffer[FILE_TRANSFER_BUFFER_SIZE] = {0};
 bool ready = false;
+bool mountOK = false;
+bool allocateOK = false;
 
 // PSRAM setup (for bench testing only, PSRAM is not used in current firmware)
 extern "C" uint8_t external_psram_size;
@@ -277,10 +279,13 @@ void setup() {
   
   Serial1.begin(1312500);
   setStartSamplePositions();
-  SDcard.begin(SdioConfig(FIFO_SDIO));
+  mountOK = SDcard.begin(SdioConfig(FIFO_SDIO));
   SDcard.remove("AudioData.dat");
   Wave0 = SDcard.open("AudioData.dat", O_RDWR | O_CREAT);
-  Wave0.preAllocate(HALF_MEMORY_SD * 2);
+  allocateOK = Wave0.preAllocate(HALF_MEMORY_SD * 2);
+  if (allocateOK) {
+    allocateOK = Wave0.sync();
+  }
   while (sdBusy()) {}
   Wave0.seek(waveformStartPosSD[waveIndex][playSlot[waveIndex]] * 4);
   
@@ -351,6 +356,12 @@ void loop() {
           USBCOM.writeUint32(samplingRate);
           USBCOM.writeUint32(MAX_SECONDS_PER_WAVEFORM);
           USBCOM.writeUint32(MAX_ENVELOPE_SIZE);
+        }
+      break;
+      case 'V':
+        if (opSource == 0) {
+          USBCOM.writeUint32(HARDWARE_VERSION); // 4-byte hardware version
+          USBCOM.writeUint32(FIRMWARE_VERSION); // 4-byte firmware version
         }
       break;
       case 'E': // Use/disuse AM envelope
@@ -449,7 +460,7 @@ void loop() {
           USBCOM.writeByte(1); // Acknowledge
         }
       break;
-      case 'L':
+      case 'L': // Load a sound to microSD
         if (opSource == 0) {
           serialReadOK = 1;
           while (Serial.available() == 0) {}
@@ -536,6 +547,24 @@ void loop() {
           Serial.write(memOK);
         }
       break;
+
+      case '$': // Return mounting and microSD allocation succcess flags
+        Serial.write(mountOK);
+        Serial.write(allocateOK);
+      break;
+
+      case '+': // Format microSD card and re-create file
+        mountOK = formatCard();
+        Wave0 = SDcard.open("AudioData.dat", O_RDWR | O_CREAT);
+        allocateOK = Wave0.preAllocate(HALF_MEMORY_SD * 2);
+        if (allocateOK) {
+          allocateOK = Wave0.sync();
+        }
+        while (sdBusy()) {}
+        Wave0.seek(waveformStartPosSD[waveIndex][playSlot[waveIndex]] * 4);
+        Serial.write(mountOK);
+        Serial.write(allocateOK);
+      break;
     }
   }
   // MicroSD transfer
@@ -585,6 +614,9 @@ void loop() {
       }
       nBuffersLoaded++;
       if (nBuffersLoaded == nTotalReads) {
+        if (!Wave0.sync()) {
+          serialReadOK = 0;
+        }
         safeLoadingToSD = false;
         newWaveLoaded[loadIndex] = true;
         Serial.write(serialReadOK); Serial.send_now();
@@ -1219,7 +1251,7 @@ bool check_fixed_pattern(uint32_t pattern)
     (uint32_t)memory_end - (uint32_t)memory_begin);
   for (p = memory_begin; p < memory_end; p++) {
     uint32_t actual = *p;
-    if (actual != pattern) return false;
+    if (actual != pattern) {return false;}
   }
   return true;
 }
@@ -1261,6 +1293,28 @@ uint32_t readUint32FromSource(byte opSource) {
       return StateMachineCOM.readUint32();
     break;
   }
+}
+
+bool formatCard() {
+  if (Wave0) {
+    Wave0.close();
+  }
+  Serial.println("STATUS: Starting Format...");
+  FatFormatter formatter;
+  // The formatter needs a 512-byte temporary workspace (cache)
+  uint8_t cache[512];
+
+  if (!formatter.format(SDcard.card(), cache, &Serial)) {
+    Serial.println("ERROR: Format failed!");
+    return false;
+  }
+  //Serial.println("STATUS: Format Complete. Re-initializing...");
+  if (!SDcard.begin(SdioConfig(FIFO_SDIO))) {
+    Serial.println("ERROR: Card re-init failed!");
+    return false;
+  }
+  Serial.println("SUCCESS: Card format complete!");
+  return true;
 }
 
 void returnModuleInfo() {
