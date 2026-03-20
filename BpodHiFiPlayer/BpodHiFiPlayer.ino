@@ -55,7 +55,6 @@
 #define makeUnsignedLong(msb, byte2, byte3, lsb) ((msb << 24) | (byte2 << 16) | (byte3 << 8) | (lsb))
 
 // --- TI PCM5122 DAC macros ---
-
 #define PCM5122_ADDRESS 0x4D
 
 // --- TI PCM1796 DAC macros ---
@@ -69,6 +68,10 @@
 
 #if !defined(DAC2_PRO) && !defined(DAC2_HD)
 #error Error! You must uncomment a macro in the Device Selection section at the top of this sketch to indicate the target HiFiBerry board
+#endif
+
+#if defined(DAC2_PRO) && defined(DAC2_HD)
+#error Error! You must uncomment only one macro in the Device Selection section at the top of this sketch to indicate the target HiFiBerry board
 #endif
 
 // --- Sync pin offset
@@ -564,6 +567,10 @@ void loop() {
         Wave0.seek(waveformStartPosSD[waveIndex][playSlot[waveIndex]] * 4);
         Serial.write(mountOK);
         Serial.write(allocateOK);
+        for (int i = 0; i < MAX_WAVEFORMS; i++) { // Clear loaded wave flags
+          waveLoaded[i] = false;
+          newWaveLoaded[i] = false;
+        }
       break;
     }
   }
